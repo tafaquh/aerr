@@ -44,9 +44,12 @@ func (e *aerr) Unwrap() error {
 
 // AsAerr checks if an error is an aerr error and returns it along with a boolean indicating success.
 func AsAerr(err error) (aerr, bool) {
-	e := aerr{}
+	var e *aerr
 	ok := errors.As(err, &e)
-	return e, ok
+	if ok && e != nil {
+		return *e, ok
+	}
+	return aerr{}, ok
 }
 
 // LogValue implements slog.LogValuer for automatic structured logging.

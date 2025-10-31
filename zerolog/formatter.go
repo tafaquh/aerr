@@ -58,18 +58,15 @@ func (m zerologErrorMarshaller) MarshalZerologObject(evt *zerolog.Event) {
 		evt.Str("code", code)
 	}
 
-	if attributes := aErr.GetAttributes(); len(attributes) > 0 {
-		dict := zerolog.Dict()
-		for k, v := range attributes {
-			switch vTyped := v.(type) {
-			case nil:
-				// Skip nil values
-			case error:
-				dict = dict.Str(k, vTyped.Error())
-			default:
-				dict = dict.Interface(k, vTyped)
-			}
-		}
-		evt.Dict("attributes", dict)
+	if msg := aErr.Error(); msg != "" {
+		evt.Str("message", msg)
 	}
+
+	if attributes := aErr.GetAttributes(); len(attributes) > 0 {
+		evt.Interface("attributes", attributes)
+	}
+	if stacktraces := aErr.Traces(); len(stacktraces) > 0 {
+		evt.Interface("stacktrace", stacktraces)
+	}
+
 }
