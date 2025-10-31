@@ -185,7 +185,7 @@ func TestLogaErrChain(t *testing.T) {
 
 	output := buf.String()
 
-	// Check that all error messages are in the log
+	// Check that all error messages are in the combined message
 	if !strings.Contains(output, "API request failed") {
 		t.Errorf("expected log to contain 'API request failed', got:\n%s", output)
 	}
@@ -195,19 +195,19 @@ func TestLogaErrChain(t *testing.T) {
 	if !strings.Contains(output, "query failed") {
 		t.Errorf("expected log to contain 'query failed', got:\n%s", output)
 	}
+	if !strings.Contains(output, "syntax error") {
+		t.Errorf("expected log to contain 'syntax error', got:\n%s", output)
+	}
 
-	// Check that all codes are present
+	// Check that only the top-level code is present (new behavior)
 	if !strings.Contains(output, "API_ERROR") {
 		t.Errorf("expected log to contain 'API_ERROR', got:\n%s", output)
 	}
-	if !strings.Contains(output, "SERVICE_ERROR") {
-		t.Errorf("expected log to contain 'SERVICE_ERROR', got:\n%s", output)
-	}
-	if !strings.Contains(output, "DB_ERROR") {
-		t.Errorf("expected log to contain 'DB_ERROR', got:\n%s", output)
-	}
 
-	// Check that context fields are present
+	// Check that context fields are present in attributes
+	if !strings.Contains(output, "attributes") {
+		t.Errorf("expected log to contain 'attributes', got:\n%s", output)
+	}
 	if !strings.Contains(output, "endpoint") {
 		t.Errorf("expected log to contain 'endpoint', got:\n%s", output)
 	}
@@ -216,11 +216,6 @@ func TestLogaErrChain(t *testing.T) {
 	}
 	if !strings.Contains(output, "query") {
 		t.Errorf("expected log to contain 'query', got:\n%s", output)
-	}
-
-	// Check that errors are flattened into an array
-	if !strings.Contains(output, `"errors":[`) {
-		t.Errorf("expected log to contain errors array, got:\n%s", output)
 	}
 }
 

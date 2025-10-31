@@ -5,10 +5,11 @@ Simple error logging with stack traces for Go.
 ## Features
 
 - **Automatic stack trace capture** - Every error captures where it was created with function names
-- **Flattened error chains** - Error chains as arrays instead of deeply nested objects
+- **Simplified error output** - Single code, combined message, merged attributes
 - **Structured logging** - Stack traces as structured data, not strings
 - **Method chaining** - Fluent API for both errors and logging
 - **slog integration** - First-class support for Go's structured logging
+- **High performance** - Optimized to minimize allocations
 - **Zero dependencies** - Only uses Go standard library
 
 ## Installation
@@ -53,16 +54,15 @@ Output:
   "level": "ERROR",
   "msg": "operation failed",
   "err": {
-    "message": "failed to query user",
     "code": "DB_ERROR",
-    "error": "connection timeout",
-    "data": {
+    "message": "failed to query user: connection timeout",
+    "attributes": {
       "user_id": "123",
       "table": "users"
     },
     "stacktrace": [
-      "main.main (/path/to/file.go:34)",
-      "runtime.main (/path/to/runtime/proc.go:250)"
+      "/path/to/main.go.(main.main):34",
+      "/usr/local/go/src/runtime/proc.go.(runtime.main):250"
     ]
   }
 }
@@ -102,9 +102,9 @@ err := aerr.Message("database query failed").
     Err(dbErr)
 ```
 
-### Error Wrapping - Flattened Chains
+### Error Wrapping - Simplified Output
 
-When you wrap errors, they're stored as a **flat array** instead of deeply nested objects:
+When you wrap errors, they're combined into a **single simplified structure**:
 
 ```go
 // Layer 1: Database error
@@ -129,37 +129,30 @@ serviceErr := aerr.Code("SERVICE_ERROR").
 slog.Error("request failed", slog.Any("err", serviceErr))
 ```
 
-Output shows **flat array** instead of nested objects:
+Output shows **simplified structure**:
 ```json
 {
   "err": {
-    "errors": [
-      {
-        "code": "SERVICE_ERROR",
-        "message": "user service failed",
-        "data": {"operation": "GetUser"}
-      },
-      {
-        "code": "REPOSITORY_ERROR",
-        "message": "failed to find user in repository",
-        "data": {"user_id": "12345"}
-      },
-      {
-        "code": "DB_ERROR",
-        "message": "database query failed",
-        "data": {"query": "SELECT * FROM users"},
-        "stacktrace": [
-          "main.QueryDatabase (/path/to/db.go:42)",
-          "main.FindUser (/path/to/repo.go:28)"
-        ]
-      },
-      {
-        "error": "connection timeout"
-      }
+    "code": "SERVICE_ERROR",
+    "message": "user service failed: failed to find user in repository: database query failed: connection timeout",
+    "attributes": {
+      "operation": "GetUser",
+      "user_id": "12345",
+      "query": "SELECT * FROM users"
+    },
+    "stacktrace": [
+      "/path/to/database.go.(main.QueryDatabase):42",
+      "/path/to/repository.go.(main.FindUser):28"
     ]
   }
 }
 ```
+
+**Key benefits:**
+- **Single code**: Shows the outermost/top-level error code
+- **Combined message**: All error messages joined with `: ` for easy reading
+- **Merged attributes**: All fields from the error chain in one object
+- **Deepest stacktrace**: Shows where the error originated
 
 ### Control Stack Traces
 
@@ -179,14 +172,15 @@ err := aerr.Code("ERR002").
 
 ### Stack Trace Format
 
-Stack traces include function names for easy debugging:
+Stack traces use the format `file_path.(package.function):line`:
 
 ```json
 "stacktrace": [
-  "main.QueryDatabase (/home/user/project/db.go:75)",
-  "main.FindUserRepository (/home/user/project/repo.go:52)",
-  "main.GetUserService (/home/user/project/service.go:39)",
-  "main.HandleUserRequest (/home/user/project/handler.go:26)"
+  "/home/user/project/database.go.(main.QueryDatabase):75",
+  "/home/user/project/repository.go.(main.FindUserRepository):52",
+  "/home/user/project/service.go.(main.GetUserService):39",
+  "/home/user/project/handler.go.(main.HandleUserRequest):26",
+  "/home/user/project/services/service.go.(github.com/user/project/services.(*Service).HandleRequest):142"
 ]
 ```
 
@@ -204,6 +198,8 @@ Stack traces include function names for easy debugging:
 - `(*aerr).Wrap(err error) error` - Wrap another error (creates chain)
 
 ## Complete Example - Multi-Layer Application
+
+### Using slog (default)
 
 ```go
 package main
@@ -284,59 +280,99 @@ func QueryDatabase(query string, args ...any) error {
 }
 ```
 
-Output shows all errors in a **flat array** with full context:
+Output shows **simplified structure** with all context:
 ```json
 {
   "time": "2025-10-31T11:21:32.150424577+07:00",
   "level": "ERROR",
   "msg": "request failed",
   "err": {
-    "errors": [
-      {
-        "code": "CONTROLLER_ERROR",
-        "data": {
-          "endpoint": "/api/users/12345",
-          "method": "GET"
-        },
-        "message": "failed to handle user request"
-      },
-      {
-        "code": "SERVICE_ERROR",
-        "data": {
-          "operation": "GetUser",
-          "service": "UserService"
-        },
-        "message": "user service failed"
-      },
-      {
-        "code": "REPOSITORY_ERROR",
-        "data": {
-          "table": "users",
-          "user_id": "12345"
-        },
-        "message": "failed to find user in repository"
-      },
-      {
-        "code": "DB_ERROR",
-        "data": {
-          "args": ["12345"],
-          "driver": "postgres",
-          "query": "SELECT * FROM users WHERE id = ?"
-        },
-        "message": "database query failed",
-        "stacktrace": [
-          "main.QueryDatabase (/home/user/aerr/examples/nested_layers.go:75)",
-          "main.FindUserRepository (/home/user/aerr/examples/nested_layers.go:52)",
-          "main.GetUserService (/home/user/aerr/examples/nested_layers.go:39)",
-          "main.HandleUserRequest (/home/user/aerr/examples/nested_layers.go:26)",
-          "main.main (/home/user/aerr/examples/nested_layers.go:18)"
-        ]
-      },
-      {
-        "error": "connection timeout after 5s"
-      }
+    "code": "CONTROLLER_ERROR",
+    "message": "failed to handle user request: user service failed: failed to find user in repository: database query failed: connection timeout after 5s",
+    "attributes": {
+      "endpoint": "/api/users/12345",
+      "method": "GET",
+      "operation": "GetUser",
+      "service": "UserService",
+      "user_id": "12345",
+      "table": "users",
+      "query": "SELECT * FROM users WHERE id = ?",
+      "args": ["12345"],
+      "driver": "postgres"
+    },
+    "stacktrace": [
+      "/home/user/project/main.go.(main.QueryDatabase):75",
+      "/home/user/project/main.go.(main.FindUserRepository):52",
+      "/home/user/project/main.go.(main.GetUserService):39",
+      "/home/user/project/main.go.(main.HandleUserRequest):26",
+      "/home/user/project/main.go.(main.main):18"
     ]
   }
+}
+```
+
+### Using zerolog
+
+```go
+package main
+
+import (
+	"errors"
+	"os"
+
+	"github.com/rs/zerolog"
+	"github.com/tafaquh/aerr"
+	_ "github.com/tafaquh/aerr/zerolog" // Import to enable aerr integration
+)
+
+func main() {
+	// Setup zerolog logger
+	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+
+	// Simulate an API request
+	err := HandleUserRequest("12345")
+	if err != nil {
+		// Standard zerolog API - just works!
+		logger.Error().Stack().Err(err).Msg("request failed")
+	}
+}
+
+// (Same HandleUserRequest, GetUserService, FindUserRepository, QueryDatabase functions as above)
+```
+
+> **Note**: You can run both examples from the `examples/` directory:
+> - `go run main.go` for slog output
+> - `go run main.go -zerolog` for zerolog output
+
+Output with **zerolog** (same simplified structure):
+```json
+{
+  "level": "error",
+  "err": {
+    "code": "CONTROLLER_ERROR",
+    "message": "failed to handle user request: user service failed: failed to find user in repository: database query failed: connection timeout after 5s",
+    "attributes": {
+      "service": "UserService",
+      "user_id": "12345",
+      "table": "users",
+      "query": "SELECT * FROM users WHERE id = ?",
+      "args": ["12345"],
+      "driver": "postgres",
+      "endpoint": "/api/users/12345",
+      "method": "GET",
+      "operation": "GetUser"
+    },
+    "stacktrace": [
+      "/home/user/project/main.go.(main.QueryDatabase):101",
+      "/home/user/project/main.go.(main.FindUserRepository):78",
+      "/home/user/project/main.go.(main.GetUserService):65",
+      "/home/user/project/main.go.(main.HandleUserRequest):52",
+      "/home/user/project/main.go.(main.runWithZerolog):44",
+      "/home/user/project/main.go.(main.main):20"
+    ]
+  },
+  "time": "2025-10-31T16:01:45+07:00",
+  "message": "request failed"
 }
 ```
 
@@ -346,13 +382,150 @@ Output shows all errors in a **flat array** with full context:
 
 **Automatic** - Implements `slog.LogValuer` for automatic structured logging.
 
-**Flat Error Chains** - Error chains are arrays, not deeply nested objects. Much easier to read and process!
+**Simplified Output** - Single code, combined messages, merged attributes. Much easier to read!
 
-**Rich Stack Traces** - Includes function names in stack traces for quick debugging.
+**Rich Stack Traces** - Compact format with full function paths for quick debugging.
+
+**High Performance** - Optimized to minimize allocations. Faster than logrus and go-kit.
 
 **Flexible** - Add error codes, custom fields, and control stack traces.
 
 **Compatible** - Works with standard `errors.Is()`, `errors.As()`, and `errors.Unwrap()`.
+
+## Zerolog Integration
+
+aerr provides optional zerolog integration through a separate package for high-performance logging.
+
+### Installation
+
+```bash
+go get github.com/tafaquh/aerr/zerolog
+```
+
+### Usage
+
+```go
+import (
+    "github.com/rs/zerolog"
+    "github.com/tafaquh/aerr"
+    _ "github.com/tafaquh/aerr/zerolog" // Import to enable aerr integration
+)
+
+func main() {
+    logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+
+    err := aerr.Code("DB_ERROR").
+        Message("query failed").
+        StackTrace().
+        With("user_id", "123").
+        Err(nil)
+
+    // Just use standard zerolog API!
+    logger.Error().Stack().Err(err).Msg("operation failed")
+}
+```
+
+## Performance Benchmarks
+
+All benchmarks run on Intel Core Ultra 9 185H with 3 second benchmark time.
+
+### slog Integration (Default)
+
+```
+BenchmarkDisabled-4                      	128M	  29.01 ns/op	  48 B/op	   1 allocs/op
+BenchmarkSimpleError-4                   	5.8M	 565.3 ns/op	 208 B/op	   2 allocs/op
+BenchmarkSimpleErrorWithStack-4          	3.0M	  1242 ns/op	 856 B/op	   8 allocs/op
+BenchmarkErrorWith10Fields-4             	1.0M	  3049 ns/op	1848 B/op	  29 allocs/op
+BenchmarkErrorWith10FieldsAndStack-4     	926K	  3759 ns/op	2497 B/op	  35 allocs/op
+BenchmarkErrorChain-4                    	1.0M	  3000 ns/op	1881 B/op	  26 allocs/op
+BenchmarkErrorChainDeep-4                	1.2M	  2913 ns/op	1865 B/op	  25 allocs/op
+BenchmarkErrorCreation-4                 	 27M	 129.6 ns/op	 432 B/op	   3 allocs/op
+BenchmarkErrorCreationWithStack-4        	2.8M	  1259 ns/op	 960 B/op	   6 allocs/op
+```
+
+### Zerolog Integration Benchmarks
+
+**Native Zerolog (baseline):**
+```
+BenchmarkZerologDisabled-4               	 1B	  1.627 ns/op	   0 B/op	   0 allocs/op
+BenchmarkZerologSimple-4                 	74M	 50.05 ns/op	   0 B/op	   0 allocs/op
+BenchmarkZerologWith10Fields-4           	19M	 192.1 ns/op	   0 B/op	   0 allocs/op
+BenchmarkZerologWith10FieldsAndStack-4   	17M	 211.1 ns/op	   0 B/op	   0 allocs/op
+BenchmarkZerologErrorChain-4             	20M	 178.2 ns/op	   0 B/op	   0 allocs/op
+```
+
+**Aerr with Zerolog:**
+```
+BenchmarkAerrZerologSimple-4             	22M	 152.3 ns/op	  32 B/op	   2 allocs/op
+BenchmarkAerrZerologWith10Fields-4       	1.9M	  1916 ns/op	1816 B/op	  26 allocs/op
+BenchmarkAerrZerologWith10FieldsAndStack-4	1.4M	  2536 ns/op	2481 B/op	  32 allocs/op
+BenchmarkAerrZerologErrorChain-4         	1.4M	  2598 ns/op	2682 B/op	  29 allocs/op
+```
+
+### Comparison Table
+
+**Simple Error:**
+| Implementation | Time | Bytes | Allocs | vs Native |
+|---------------|------|-------|--------|-----------|
+| Native Zerolog | 50.05 ns | 0 B | 0 | baseline |
+| Aerr + Zerolog | 152.3 ns | 32 B | 2 | **3x slower** |
+| Aerr + slog | 565.3 ns | 208 B | 2 | 11x slower |
+
+**10 Fields:**
+| Implementation | Time | Bytes | Allocs | vs Native |
+|---------------|------|-------|--------|-----------|
+| Native Zerolog | 192.1 ns | 0 B | 0 | baseline |
+| Aerr + Zerolog | 1916 ns | 1816 B | 26 | **10x slower** |
+| Aerr + slog | 3049 ns | 1848 B | 29 | 16x slower |
+
+**10 Fields + Stack:**
+| Implementation | Time | Bytes | Allocs | vs Native |
+|---------------|------|-------|--------|-----------|
+| Native Zerolog | 211.1 ns | 0 B | 0 | baseline |
+| Aerr + Zerolog | 2536 ns | 2481 B | 32 | **12x slower** |
+| Aerr + slog | 3759 ns | 2497 B | 35 | 18x slower |
+
+**Error Chain (3 levels):**
+| Implementation | Time | Bytes | Allocs | vs Native |
+|---------------|------|-------|--------|-----------|
+| Native Zerolog | 178.2 ns | 0 B | 0 | baseline |
+| Aerr + Zerolog | 2598 ns | 2682 B | 29 | **15x slower** |
+| Aerr + slog | 3000 ns | 1881 B | 26 | 17x slower |
+
+### Performance Analysis
+
+**When to use each:**
+
+- **Native Zerolog**: Maximum performance, zero allocations, manual field management
+- **Aerr + Zerolog**: Structured error chains with automatic context merging, ~10x overhead
+- **Aerr + slog**: Standard library integration, similar performance to Aerr + Zerolog
+
+**Trade-offs:**
+- aerr adds overhead for rich error context (codes, messages, attributes, stack traces)
+- Error chain simplification (combining messages, merging attributes) has a cost
+- Stack trace capture and formatting adds ~1-2 µs per error
+- The convenience of automatic error structuring comes with performance cost
+
+**Recommendation:**
+- Use **native zerolog** for hot paths where every nanosecond counts
+- Use **aerr + zerolog** when you want structured error chains with excellent performance
+- Use **aerr + slog** for standard library compatibility and similar performance
+
+### Run Benchmarks
+
+```bash
+# Navigate to benchmarks directory
+cd benchmarks
+
+# All benchmarks
+go test -bench=. -benchmem -benchtime=3s
+
+# Only zerolog comparisons
+go test -bench="Zerolog|AerrZerolog" -benchmem -benchtime=3s
+
+# Only slog benchmarks
+go test -bench="^Benchmark[^Z]" -benchmem -benchtime=3s
+```
 
 ## License
 

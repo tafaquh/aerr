@@ -2,10 +2,20 @@ package aerr
 
 // Package aerr provides simple error logging with stack traces
 import (
-	"fmt"
+	"encoding/json"
 	"log/slog"
 	"runtime"
+	"strconv"
+	"strings"
+	"sync"
 )
+
+var bufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 256)
+		return &b
+	},
+}
 
 // aerr provides a fluent API for constructing errors.
 type aerr struct {
@@ -33,65 +43,307 @@ func (e *aerr) Unwrap() error {
 	return e.cause
 }
 
+// AsAerr checks if an error is an aerr error and returns it along with a boolean indicating success.
+func AsAerr(err error) (error, bool) {
+	if err == nil {
+		return nil, false
+	}
+	if aErr, ok := err.(*aerr); ok {
+		return aErr, true
+	}
+	return nil, false
+}
+
+// GetMessage returns the message from an aerr error.
+// The error must be an *aerr type, otherwise returns empty string.
+func GetMessage(err error) string {
+	if aErr, ok := err.(*aerr); ok {
+		return aErr.msg
+	}
+	return ""
+}
+
+// GetCode returns the code from an aerr error.
+// The error must be an *aerr type, otherwise returns empty string.
+func GetCode(err error) string {
+	if aErr, ok := err.(*aerr); ok {
+		return aErr.code
+	}
+	return ""
+}
+
+// GetFields returns the fields/attributes from an aerr error.
+// The error must be an *aerr type, otherwise returns nil.
+func GetFields(err error) map[string]any {
+	if aErr, ok := err.(*aerr); ok {
+		return aErr.fields
+	}
+	return nil
+}
+
+// GetStack returns the stack trace from an aerr error.
+// The error must be an *aerr type, otherwise returns nil.
+func GetStack(err error) []uintptr {
+	if aErr, ok := err.(*aerr); ok {
+		return aErr.stack
+	}
+	return nil
+}
+
+// GetCause returns the wrapped error from an aerr error.
+// The error must be an *aerr type, otherwise returns nil.
+func GetCause(err error) error {
+	if aErr, ok := err.(*aerr); ok {
+		return aErr.cause
+	}
+	return nil
+}
+
 // LogValue implements slog.LogValuer for automatic structured logging.
-// It flattens nested errors into an array instead of deeply nested objects.
+// It shows only the last code and builds a single combined message from the error chain.
 func (e *aerr) LogValue() slog.Value {
 	if e == nil {
 		return slog.Value{}
 	}
 
-	// Collect all errors in the chain
-	var errors []map[string]any
+	messages := make([]string, 0, 4)
+	result := make([]slog.Attr, 0, 4)
+	var lastCode string
+	var allAttributes map[string]any
+	seenFrames := make(map[string]struct{})
+	var stacktrace []string
 
 	// Walk through the error chain
 	current := error(e)
 	for current != nil {
 		if aErr, ok := current.(*aerr); ok {
-			errMap := make(map[string]any)
-			errMap["message"] = aErr.msg
-
-			if aErr.code != "" {
-				errMap["code"] = aErr.code
+			// Collect message
+			if aErr.msg != "" {
+				messages = append(messages, aErr.msg)
 			}
 
+			// Keep the first code we encounter (the outermost/top-level error code)
+			if lastCode == "" && aErr.code != "" {
+				lastCode = aErr.code
+			}
+
+			// Merge attributes from all errors (lazy init to avoid allocation if no attributes)
 			if len(aErr.fields) > 0 {
-				errMap["data"] = aErr.fields
+				if allAttributes == nil {
+					allAttributes = make(map[string]any, len(aErr.fields))
+				}
+				for k, v := range aErr.fields {
+					allAttributes[k] = v
+				}
 			}
 
+			// Collect ALL stacktraces from all errors in the chain with deduplication
 			if !aErr.skipStack && len(aErr.stack) > 0 {
-				stackStrs := make([]string, 0)
 				frames := runtime.CallersFrames(aErr.stack)
 				for {
 					frame, more := frames.Next()
-					stackStrs = append(stackStrs, fmt.Sprintf("%s (%s:%d)", frame.Function, frame.File, frame.Line))
+
+					// Get buffer from pool
+					bufPtr := bufPool.Get().(*[]byte)
+					buf := (*bufPtr)[:0]
+
+					// Format frame using pooled buffer
+					buf = append(buf, frame.File...)
+					buf = append(buf, '.', '(')
+					buf = append(buf, frame.Function...)
+					buf = append(buf, ')', ':')
+					buf = strconv.AppendInt(buf, int64(frame.Line), 10)
+					frameStr := string(buf)
+
+					// Return buffer to pool
+					*bufPtr = buf
+					bufPool.Put(bufPtr)
+
+					// Only add if we haven't seen this frame before
+					if _, seen := seenFrames[frameStr]; !seen {
+						stacktrace = append(stacktrace, frameStr)
+						seenFrames[frameStr] = struct{}{}
+					}
+
 					if !more {
 						break
 					}
 				}
-				errMap["stacktrace"] = stackStrs
 			}
 
-			errors = append(errors, errMap)
 			current = aErr.cause
 		} else {
 			// Non-aerr error at the end of the chain
-			errors = append(errors, map[string]any{"error": current.Error()})
+			messages = append(messages, current.Error())
 			break
 		}
 	}
 
-	// Return as an array of errors
-	if len(errors) == 1 {
-		// Single error - return it directly as attributes
-		attrs := make([]slog.Attr, 0, len(errors[0]))
-		for k, v := range errors[0] {
-			attrs = append(attrs, slog.Any(k, v))
-		}
-		return slog.GroupValue(attrs...)
+	// Add code if present
+	if lastCode != "" {
+		result = append(result, slog.String("code", lastCode))
 	}
 
-	// Multiple errors - return as array
-	return slog.AnyValue(map[string]any{"errors": errors})
+	// Build combined message from all messages in the chain using strings.Builder
+	if len(messages) > 0 {
+		// Fast path for single message
+		if len(messages) == 1 {
+			result = append(result, slog.String("message", messages[0]))
+		} else {
+			// Estimate total length to minimize allocations
+			totalLen := 0
+			for _, msg := range messages {
+				totalLen += len(msg)
+			}
+			totalLen += (len(messages) - 1) * 2 // Add space for ": " separators
+
+			var msgBuilder strings.Builder
+			msgBuilder.Grow(totalLen)
+			for i, msg := range messages {
+				if i > 0 {
+					msgBuilder.WriteString(": ")
+				}
+				msgBuilder.WriteString(msg)
+			}
+			result = append(result, slog.String("message", msgBuilder.String()))
+		}
+	}
+
+	// Add attributes if present
+	if len(allAttributes) > 0 {
+		result = append(result, slog.Any("attributes", allAttributes))
+	}
+
+	// Add stacktrace if present
+	if len(stacktrace) > 0 {
+		result = append(result, slog.Any("stacktrace", stacktrace))
+	}
+
+	return slog.GroupValue(result...)
+}
+
+// MarshalJSON implements json.Marshaler for automatic JSON serialization.
+// This allows aerr errors to work seamlessly with zerolog and other JSON loggers.
+func (e *aerr) MarshalJSON() ([]byte, error) {
+	if e == nil {
+		return []byte("null"), nil
+	}
+
+	var messages []string
+	var lastCode string
+	var allAttributes map[string]any
+	seenFrames := make(map[string]struct{})
+	var stacktrace []string
+
+	// Walk through the error chain
+	current := error(e)
+	for current != nil {
+		if aErr, ok := current.(*aerr); ok {
+			// Collect message
+			if aErr.msg != "" {
+				messages = append(messages, aErr.msg)
+			}
+
+			// Keep the first code we encounter
+			if lastCode == "" && aErr.code != "" {
+				lastCode = aErr.code
+			}
+
+			// Merge attributes from all errors
+			if len(aErr.fields) > 0 {
+				if allAttributes == nil {
+					allAttributes = make(map[string]any, len(aErr.fields))
+				}
+				for k, v := range aErr.fields {
+					allAttributes[k] = v
+				}
+			}
+
+			// Collect stacktraces with deduplication
+			if !aErr.skipStack && len(aErr.stack) > 0 {
+				frames := runtime.CallersFrames(aErr.stack)
+				for {
+					frame, more := frames.Next()
+
+					// Get buffer from pool
+					bufPtr := bufPool.Get().(*[]byte)
+					buf := (*bufPtr)[:0]
+
+					// Format frame using pooled buffer
+					buf = append(buf, frame.File...)
+					buf = append(buf, '.', '(')
+					buf = append(buf, frame.Function...)
+					buf = append(buf, ')', ':')
+					buf = strconv.AppendInt(buf, int64(frame.Line), 10)
+					frameStr := string(buf)
+
+					// Return buffer to pool
+					*bufPtr = buf
+					bufPool.Put(bufPtr)
+
+					// Only add if we haven't seen this frame before
+					if _, seen := seenFrames[frameStr]; !seen {
+						stacktrace = append(stacktrace, frameStr)
+						seenFrames[frameStr] = struct{}{}
+					}
+
+					if !more {
+						break
+					}
+				}
+			}
+
+			current = aErr.cause
+		} else {
+			// Non-aerr error at the end of the chain
+			messages = append(messages, current.Error())
+			break
+		}
+	}
+
+	// Build the result map
+	result := make(map[string]any)
+
+	// Add code if present
+	if lastCode != "" {
+		result["code"] = lastCode
+	}
+
+	// Build combined message
+	if len(messages) > 0 {
+		if len(messages) == 1 {
+			result["message"] = messages[0]
+		} else {
+			// Estimate total length
+			totalLen := 0
+			for _, msg := range messages {
+				totalLen += len(msg)
+			}
+			totalLen += (len(messages) - 1) * 2
+
+			var msgBuilder strings.Builder
+			msgBuilder.Grow(totalLen)
+			for i, msg := range messages {
+				if i > 0 {
+					msgBuilder.WriteString(": ")
+				}
+				msgBuilder.WriteString(msg)
+			}
+			result["message"] = msgBuilder.String()
+		}
+	}
+
+	// Add attributes if present
+	if len(allAttributes) > 0 {
+		result["attributes"] = allAttributes
+	}
+
+	// Add stacktrace if present
+	if len(stacktrace) > 0 {
+		result["stacktrace"] = stacktrace
+	}
+
+	return json.Marshal(result)
 }
 
 // Code starts building an error with an error code.
@@ -186,12 +438,38 @@ func (b *aerr) Err(cause error) error {
 	return e
 }
 
-// captureStack captures the current stack trace.
+// captureStack captures the current stack trace with intelligent filtering.
+// It excludes frames from the Go standard library (GOROOT) and internal
+// aerr package frames to provide cleaner, more relevant stack traces.
 func captureStack() []uintptr {
-	const depth = 32
-	var pcs [depth]uintptr
-	n := runtime.Callers(3, pcs[:]) // Skip captureStack, New/Wrap/Err, and runtime.Callers
-	stack := make([]uintptr, n)
-	copy(stack, pcs[:n])
-	return stack
+	const maxDepth = 32
+	var pcs [maxDepth]uintptr
+
+	// Capture raw program counters starting from caller's caller
+	// Skip: captureStack, Err/Wrap, runtime.Callers
+	n := runtime.Callers(3, pcs[:])
+
+	// Filter frames to exclude irrelevant ones
+	filtered := make([]uintptr, 0, n)
+	frames := runtime.CallersFrames(pcs[:n])
+
+	goroot := runtime.GOROOT()
+
+	for {
+		frame, more := frames.Next()
+
+		// Skip frames from Go standard library if GOROOT is set
+		isGoStd := goroot != "" && strings.HasPrefix(frame.File, goroot)
+
+		// Include frame if it's not from standard library
+		if !isGoStd {
+			filtered = append(filtered, frame.PC)
+		}
+
+		if !more {
+			break
+		}
+	}
+
+	return filtered
 }
