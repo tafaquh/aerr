@@ -8,7 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/tafaquh/aerr"
-	aerrzerolog "github.com/tafaquh/aerr/zerolog"
+	_ "github.com/tafaquh/aerr/zerolog"
 )
 
 func TestZerologIntegration(t *testing.T) {
@@ -20,7 +20,7 @@ func TestZerologIntegration(t *testing.T) {
 		StackTrace().
 		Err(nil)
 
-	logger.Error().Interface("err", aerrzerolog.AerrMarshaller(err)).Msg("test")
+	logger.Error().Err(err).Msg("test")
 
 	output := buf.String()
 
@@ -47,7 +47,7 @@ func TestZerologWithFields(t *testing.T) {
 		StackTrace().
 		Err(nil)
 
-	logger.Error().Interface("err", aerrzerolog.AerrMarshaller(err)).Msg("test")
+	logger.Error().Err(err).Msg("test")
 
 	output := buf.String()
 
@@ -82,7 +82,7 @@ func TestZerologErrorChain(t *testing.T) {
 		With("endpoint", "/api/users").
 		Wrap(err2)
 
-	logger.Error().Interface("err", aerrzerolog.AerrMarshaller(err3)).Msg("request failed")
+	logger.Error().Err(err3).Msg("request failed")
 
 	output := buf.String()
 

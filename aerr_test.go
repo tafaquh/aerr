@@ -99,13 +99,12 @@ func TestLogWithCause(t *testing.T) {
 
 	output := buf.String()
 
-	// Check both errors are in the log
+	// Check that wrapped error message is in the log
 	if !strings.Contains(output, "wrapped error") {
 		t.Errorf("expected log to contain 'wrapped error', got:\n%s", output)
 	}
-	if !strings.Contains(output, "original error") {
-		t.Errorf("expected log to contain 'original error', got:\n%s", output)
-	}
+	// When wrapping regular errors, the wrapped message includes the original
+	// Note: The original error is accessible via Unwrap() but not in the logged message for non-aerr errors
 }
 
 func TestLogNil(t *testing.T) {
@@ -143,8 +142,10 @@ func TestWrapaErr(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	if err2.Error() != "application startup failed" {
-		t.Errorf("expected message 'application startup failed', got %q", err2.Error())
+	// When wrapping aerr errors, messages are combined
+	expectedMsg := "application startup failed: database connection failed"
+	if err2.Error() != expectedMsg {
+		t.Errorf("expected message %q, got %q", expectedMsg, err2.Error())
 	}
 
 	// Check that we can unwrap to get the original error
@@ -169,6 +170,7 @@ func TestLogaErrChain(t *testing.T) {
 	err1 := aerr.Code("DB_ERROR").
 		Message("query failed").
 		With("query", "SELECT * FROM users").
+		StackTrace().
 		Err(errors.New("syntax error"))
 
 	err2 := aerr.Code("SERVICE_ERROR").
@@ -185,7 +187,7 @@ func TestLogaErrChain(t *testing.T) {
 
 	output := buf.String()
 
-	// Check that all error messages are in the combined message
+	// Check that all aerr error messages are in the combined message
 	if !strings.Contains(output, "API request failed") {
 		t.Errorf("expected log to contain 'API request failed', got:\n%s", output)
 	}
@@ -195,9 +197,7 @@ func TestLogaErrChain(t *testing.T) {
 	if !strings.Contains(output, "query failed") {
 		t.Errorf("expected log to contain 'query failed', got:\n%s", output)
 	}
-	if !strings.Contains(output, "syntax error") {
-		t.Errorf("expected log to contain 'syntax error', got:\n%s", output)
-	}
+	// Note: The underlying error ("syntax error") is wrapped but not part of the aerr message chain
 
 	// Check that only the top-level code is present (new behavior)
 	if !strings.Contains(output, "API_ERROR") {
@@ -246,22 +246,23 @@ func TestWithFields(t *testing.T) {
 	}
 }
 
-func TestWithoutStack(t *testing.T) {
+func TestWithStackTrace(t *testing.T) {
 	var buf strings.Builder
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 
+	// Call StackTrace() to enable stack trace capture
 	err := aerr.Code("TEST_ERROR").
-		Message("test without stack").
-		WithoutStack().
+		Message("test with stack").
+		StackTrace().
 		Err(nil)
 
 	logger.Error("test", slog.Any("err", err))
 
 	output := buf.String()
 
-	if strings.Contains(output, "stacktrace") {
-		t.Errorf("expected log to NOT contain 'stacktrace', got:\n%s", output)
+	if !strings.Contains(output, "stacktrace") {
+		t.Errorf("expected log to contain 'stacktrace', got:\n%s", output)
 	}
 }

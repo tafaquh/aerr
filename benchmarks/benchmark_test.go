@@ -3,13 +3,17 @@ package aerr_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
 
 	"github.com/rs/zerolog"
+	"github.com/sirupsen/logrus"
 	"github.com/tafaquh/aerr"
-	aerrzerolog "github.com/tafaquh/aerr/zerolog"
+	_ "github.com/tafaquh/aerr/zerolog"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // BenchmarkDisabled tests logging when disabled (should be very fast)
@@ -18,7 +22,8 @@ func BenchmarkDisabled(b *testing.B) {
 		Level: slog.LevelError,
 	}))
 
-	err := aerr.Message("test error").WithoutStack().Err(nil)
+	// Don't call StackTrace() for benchmark without stack
+	err := aerr.Message("test error").Err(nil)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -34,7 +39,8 @@ func BenchmarkSimpleError(b *testing.B) {
 		Level: slog.LevelError,
 	}))
 
-	err := aerr.Message("test error").WithoutStack().Err(nil)
+	// Don't call StackTrace() for simple error without stack
+	err := aerr.Message("test error").Err(nil)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -68,9 +74,9 @@ func BenchmarkErrorWith10Fields(b *testing.B) {
 		Level: slog.LevelError,
 	}))
 
+	// Don't call StackTrace() for benchmark without stack
 	err := aerr.Code("TEST_ERROR").
 		Message("test error").
-		WithoutStack().
 		With("field1", "value1").
 		With("field2", "value2").
 		With("field3", "value3").
@@ -181,9 +187,9 @@ func BenchmarkErrorCreation(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		// Don't call StackTrace() for benchmark without stack
 		_ = aerr.Code("TEST_ERROR").
 			Message("test error").
-			WithoutStack().
 			With("field1", "value1").
 			With("field2", "value2").
 			Err(nil)
@@ -283,17 +289,19 @@ func BenchmarkZerologWith10FieldsAndStack(b *testing.B) {
 }
 
 // BenchmarkZerologErrorChain tests zerolog with error wrapping (3 levels)
+// Uses fmt.Errorf with %w for proper error wrapping, but fields are added manually
 func BenchmarkZerologErrorChain(b *testing.B) {
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
-	err1 := errors.New("connection timeout")
-	err2 := errors.New("database query failed: " + err1.Error())
-	err3 := errors.New("user service failed: " + err2.Error())
-
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		// Create error chain each iteration to match aerr's behavior
+		err1 := errors.New("connection timeout")
+		err2 := fmt.Errorf("database query failed: %w", err1)
+		err3 := fmt.Errorf("user service failed: %w", err2)
+
 		buf.Reset()
 		logger.Error().
 			Err(err3).
@@ -314,16 +322,16 @@ func BenchmarkAerrZerologSimple(b *testing.B) {
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
+	// Don't call StackTrace() for benchmark without stack
 	err := aerr.Code("TEST_ERROR").
 		Message("test error").
-		WithoutStack().
 		Err(nil)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		buf.Reset()
-		logger.Error().Interface("err", aerrzerolog.AerrMarshaller(err)).Msg("test")
+		logger.Error().Err(err).Msg("test")
 	}
 }
 
@@ -332,9 +340,9 @@ func BenchmarkAerrZerologWith10Fields(b *testing.B) {
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
+	// Don't call StackTrace() for benchmark without stack
 	err := aerr.Code("TEST_ERROR").
 		Message("test error").
-		WithoutStack().
 		With("field1", "value1").
 		With("field2", "value2").
 		With("field3", "value3").
@@ -351,7 +359,7 @@ func BenchmarkAerrZerologWith10Fields(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		buf.Reset()
-		logger.Error().Interface("err", aerrzerolog.AerrMarshaller(err)).Msg("test")
+		logger.Error().Err(err).Msg("test")
 	}
 }
 
@@ -379,7 +387,7 @@ func BenchmarkAerrZerologWith10FieldsAndStack(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		buf.Reset()
-		logger.Error().Interface("err", aerrzerolog.AerrMarshaller(err)).Msg("test")
+		logger.Error().Err(err).Msg("test")
 	}
 }
 
@@ -411,6 +419,146 @@ func BenchmarkAerrZerologErrorChain(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		buf.Reset()
-		logger.Error().Interface("err", aerrzerolog.AerrMarshaller(err3)).Msg("request failed")
+		logger.Error().Err(err3).Msg("request failed")
+	}
+}
+
+// ==================== Logrus Comparison Benchmarks ====================
+
+// BenchmarkLogrusSimple tests logrus with a simple error message
+func BenchmarkLogrusSimple(b *testing.B) {
+	var buf bytes.Buffer
+	logger := logrus.New()
+	logger.SetOutput(&buf)
+	logger.SetFormatter(&logrus.JSONFormatter{})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		logger.Error("test error")
+	}
+}
+
+// BenchmarkLogrusWith10Fields tests logrus with 10 fields
+func BenchmarkLogrusWith10Fields(b *testing.B) {
+	var buf bytes.Buffer
+	logger := logrus.New()
+	logger.SetOutput(&buf)
+	logger.SetFormatter(&logrus.JSONFormatter{})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		logger.WithFields(logrus.Fields{
+			"field1":  "value1",
+			"field2":  "value2",
+			"field3":  "value3",
+			"field4":  "value4",
+			"field5":  "value5",
+			"field6":  "value6",
+			"field7":  "value7",
+			"field8":  "value8",
+			"field9":  "value9",
+			"field10": "value10",
+		}).Error("test error")
+	}
+}
+
+// BenchmarkLogrusErrorChain tests logrus with error wrapping (3 levels)
+func BenchmarkLogrusErrorChain(b *testing.B) {
+	var buf bytes.Buffer
+	logger := logrus.New()
+	logger.SetOutput(&buf)
+	logger.SetFormatter(&logrus.JSONFormatter{})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err1 := errors.New("connection timeout")
+		err2 := fmt.Errorf("database query failed: %w", err1)
+		err3 := fmt.Errorf("user service failed: %w", err2)
+
+		buf.Reset()
+		logger.WithFields(logrus.Fields{
+			"error":    err3,
+			"query":    "SELECT * FROM users",
+			"table":    "users",
+			"operation": "GetUser",
+			"user_id":  "12345",
+			"endpoint": "/api/users/12345",
+			"method":   "GET",
+		}).Error("request failed")
+	}
+}
+
+// ==================== Zap Comparison Benchmarks ====================
+
+// BenchmarkZapSimple tests zap with a simple error message
+func BenchmarkZapSimple(b *testing.B) {
+	var buf bytes.Buffer
+	encoder := zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
+	core := zapcore.NewCore(encoder, zapcore.AddSync(&buf), zapcore.ErrorLevel)
+	logger := zap.New(core)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		logger.Error("test error")
+	}
+}
+
+// BenchmarkZapWith10Fields tests zap with 10 fields
+func BenchmarkZapWith10Fields(b *testing.B) {
+	var buf bytes.Buffer
+	encoder := zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
+	core := zapcore.NewCore(encoder, zapcore.AddSync(&buf), zapcore.ErrorLevel)
+	logger := zap.New(core)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		logger.Error("test error",
+			zap.String("field1", "value1"),
+			zap.String("field2", "value2"),
+			zap.String("field3", "value3"),
+			zap.String("field4", "value4"),
+			zap.String("field5", "value5"),
+			zap.String("field6", "value6"),
+			zap.String("field7", "value7"),
+			zap.String("field8", "value8"),
+			zap.String("field9", "value9"),
+			zap.String("field10", "value10"),
+		)
+	}
+}
+
+// BenchmarkZapErrorChain tests zap with error wrapping (3 levels)
+func BenchmarkZapErrorChain(b *testing.B) {
+	var buf bytes.Buffer
+	encoder := zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
+	core := zapcore.NewCore(encoder, zapcore.AddSync(&buf), zapcore.ErrorLevel)
+	logger := zap.New(core)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err1 := errors.New("connection timeout")
+		err2 := fmt.Errorf("database query failed: %w", err1)
+		err3 := fmt.Errorf("user service failed: %w", err2)
+
+		buf.Reset()
+		logger.Error("request failed",
+			zap.Error(err3),
+			zap.String("query", "SELECT * FROM users"),
+			zap.String("table", "users"),
+			zap.String("operation", "GetUser"),
+			zap.String("user_id", "12345"),
+			zap.String("endpoint", "/api/users/12345"),
+			zap.String("method", "GET"),
+		)
 	}
 }
