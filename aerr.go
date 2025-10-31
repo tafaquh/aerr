@@ -4,8 +4,10 @@ package aerr
 import (
 	"errors"
 	"log/slog"
+	"maps"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -13,6 +15,13 @@ var bufPool = sync.Pool{
 	New: func() any {
 		b := make([]byte, 0, 256)
 		return &b
+	},
+}
+
+var strSlicePool = sync.Pool{
+	New: func() any {
+		s := make([]string, 0, 16)
+		return &s
 	},
 }
 
@@ -59,18 +68,27 @@ func (e *aerr) LogValue() slog.Value {
 		return slog.Value{}
 	}
 
-	attrs := []slog.Attr{slog.String("message", e.Error())}
+	// Pre-allocate attrs with exact capacity needed (max 4 fields)
+	attrs := make([]slog.Attr, 0, 4)
 
-	if stacktraces := e.Traces(); len(stacktraces) > 0 {
-		attrs = append(attrs, slog.Any("stacktrace", stacktraces))
-	}
+	// Always include message first
+	attrs = append(attrs, slog.String("message", e.Error()))
 
+	// Add code if present
 	if code := e.GetCode(); code != "" {
-		attrs = append(attrs, slog.Any("code", code))
+		attrs = append(attrs, slog.String("code", code))
 	}
 
+	// Add attributes if present
 	if attributes := e.GetAttributes(); len(attributes) > 0 {
 		attrs = append(attrs, slog.Any("attributes", attributes))
+	}
+
+	// Add stacktrace last if present
+	if len(e.stack) > 0 {
+		if stacktraces := e.Traces(); len(stacktraces) > 0 {
+			attrs = append(attrs, slog.Any("stacktrace", stacktraces))
+		}
 	}
 
 	return slog.GroupValue(attrs...)
@@ -79,16 +97,16 @@ func (e *aerr) LogValue() slog.Value {
 // Code starts building an error with an error code.
 func Code(code string) *aerr {
 	return &aerr{
-		code:       code,
-		attributes: make(map[string]any),
+		code:      code,
+		skipStack: true, // Default to skip stack unless explicitly enabled
 	}
 }
 
 // Message starts building an error with a message.
 func Message(msg string) *aerr {
 	return &aerr{
-		msg:        msg,
-		attributes: make(map[string]any),
+		msg:       msg,
+		skipStack: true, // Default to skip stack unless explicitly enabled
 	}
 }
 
@@ -107,7 +125,7 @@ func (b *aerr) Message(msg string) *aerr {
 // With adds a key-value field to the error.
 func (b *aerr) With(key string, value any) *aerr {
 	if b.attributes == nil {
-		b.attributes = make(map[string]any)
+		b.attributes = make(map[string]any, 4) // Pre-allocate for typical usage
 	}
 	b.attributes[key] = value
 	return b
@@ -147,8 +165,18 @@ func (b *aerr) Wrap(err error) error {
 		e.code = aErr.code
 	}
 
+	// Optimize string concatenation using strings.Builder
 	if aErr.msg != "" {
-		e.msg += ": " + aErr.msg
+		if e.msg == "" {
+			e.msg = aErr.msg
+		} else {
+			var sb strings.Builder
+			sb.Grow(len(e.msg) + len(aErr.msg) + 2) // Pre-allocate exact size
+			sb.WriteString(e.msg)
+			sb.WriteString(": ")
+			sb.WriteString(aErr.msg)
+			e.msg = sb.String()
+		}
 	}
 
 	if len(aErr.stack) > 0 {
@@ -156,10 +184,14 @@ func (b *aerr) Wrap(err error) error {
 		e.skipStack = true // Don't capture a new stack since we're reusing the original
 	}
 
+	// Optimize attribute merging
 	if len(aErr.attributes) > 0 {
-		for key, value := range aErr.attributes {
-			e.attributes[key] = value
+		if e.attributes == nil {
+			// If no attributes yet, pre-allocate based on source size
+			e.attributes = make(map[string]any, len(aErr.attributes))
 		}
+		// Use maps.Copy for efficient attribute merging (Go 1.21+)
+		maps.Copy(e.attributes, aErr.attributes)
 	}
 
 	return e
@@ -191,7 +223,14 @@ func (b *aerr) GetAttributes() map[string]any {
 }
 
 func (b *aerr) Traces() []string {
-	var stacktrace []string
+	if len(b.stack) == 0 {
+		return nil
+	}
+
+	// Get string slice from pool
+	stacktracePtr := strSlicePool.Get().(*[]string)
+	stacktrace := (*stacktracePtr)[:0]
+
 	frames := runtime.CallersFrames(b.stack)
 	for {
 		frame, more := frames.Next()
@@ -217,7 +256,14 @@ func (b *aerr) Traces() []string {
 			break
 		}
 	}
-	return stacktrace
+
+	// Make a copy to return and put the slice back to pool
+	result := make([]string, len(stacktrace))
+	copy(result, stacktrace)
+	*stacktracePtr = stacktrace
+	strSlicePool.Put(stacktracePtr)
+
+	return result
 }
 
 // captureStack captures the current stack trace with intelligent filtering.
