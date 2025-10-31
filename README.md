@@ -1,4 +1,4 @@
-# pxerr
+# aerr
 
 Simple error logging with stack traces for Go.
 
@@ -14,7 +14,7 @@ Simple error logging with stack traces for Go.
 ## Installation
 
 ```bash
-go get github.com/tafaquh/pxerr
+go get github.com/tafaquh/aerr
 ```
 
 ## Quick Start
@@ -26,7 +26,7 @@ import (
     "errors"
     "log/slog"
     "os"
-    "github.com/tafaquh/pxerr"
+    "github.com/tafaquh/aerr"
 )
 
 func main() {
@@ -34,7 +34,7 @@ func main() {
     slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
     // Create error with builder pattern
-    err := pxerr.Code("DB_ERROR").
+    err := aerr.Code("DB_ERROR").
         Message("failed to query user").
         StackTrace().
         With("user_id", "123").
@@ -75,7 +75,7 @@ Output:
 Create rich errors with the fluent builder API:
 
 ```go
-err := pxerr.Code("USER_NOT_FOUND").
+err := aerr.Code("USER_NOT_FOUND").
     Message("failed to find user").
     StackTrace().
     With("user_id", userID).
@@ -90,13 +90,13 @@ slog.Error("database operation failed", slog.Any("err", err))
 
 ```go
 // Start with error code
-err := pxerr.Code("VALIDATION_ERROR").
+err := aerr.Code("VALIDATION_ERROR").
     Message("invalid email format").
     With("email", email).
     Err(nil)
 
 // Or start with message
-err := pxerr.Message("database query failed").
+err := aerr.Message("database query failed").
     Code("DB_ERROR").
     With("query", sql).
     Err(dbErr)
@@ -108,20 +108,20 @@ When you wrap errors, they're stored as a **flat array** instead of deeply neste
 
 ```go
 // Layer 1: Database error
-dbErr := pxerr.Code("DB_ERROR").
+dbErr := aerr.Code("DB_ERROR").
     Message("database query failed").
     StackTrace().
     With("query", "SELECT * FROM users").
     Err(errors.New("connection timeout"))
 
 // Layer 2: Repository wraps database error
-repoErr := pxerr.Code("REPOSITORY_ERROR").
+repoErr := aerr.Code("REPOSITORY_ERROR").
     Message("failed to find user in repository").
     With("user_id", "12345").
     Wrap(dbErr)
 
 // Layer 3: Service wraps repository error
-serviceErr := pxerr.Code("SERVICE_ERROR").
+serviceErr := aerr.Code("SERVICE_ERROR").
     Message("user service failed").
     With("operation", "GetUser").
     Wrap(repoErr)
@@ -165,13 +165,13 @@ Output shows **flat array** instead of nested objects:
 
 ```go
 // With stack trace (captures automatically with function names)
-err := pxerr.Code("ERR001").
+err := aerr.Code("ERR001").
     Message("something failed").
     StackTrace().
     Err(cause)
 
 // Without stack trace
-err := pxerr.Code("ERR002").
+err := aerr.Code("ERR002").
     Message("validation failed").
     WithoutStack().
     Err(nil)
@@ -193,15 +193,15 @@ Stack traces include function names for easy debugging:
 ## API
 
 ### Builder Pattern
-- `Code(code string) *pxerr` - Start with error code
-- `Message(msg string) *pxerr` - Start with message
-- `(*pxerr).Code(code) *pxerr` - Set error code
-- `(*pxerr).Message(msg) *pxerr` - Set message
-- `(*pxerr).With(key, val) *pxerr` - Add field
-- `(*pxerr).StackTrace() *pxerr` - Enable stack capture
-- `(*pxerr).WithoutStack() *pxerr` - Disable stack capture
-- `(*pxerr).Err(cause error) error` - Build error with cause
-- `(*pxerr).Wrap(err error) error` - Wrap another error (creates chain)
+- `Code(code string) *aerr` - Start with error code
+- `Message(msg string) *aerr` - Start with message
+- `(*aerr).Code(code) *aerr` - Set error code
+- `(*aerr).Message(msg) *aerr` - Set message
+- `(*aerr).With(key, val) *aerr` - Add field
+- `(*aerr).StackTrace() *aerr` - Enable stack capture
+- `(*aerr).WithoutStack() *aerr` - Disable stack capture
+- `(*aerr).Err(cause error) error` - Build error with cause
+- `(*aerr).Wrap(err error) error` - Wrap another error (creates chain)
 
 ## Complete Example - Multi-Layer Application
 
@@ -213,7 +213,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/tafaquh/pxerr"
+	"github.com/tafaquh/aerr"
 )
 
 func main() {
@@ -233,7 +233,7 @@ func main() {
 func HandleUserRequest(userID string) error {
 	err := GetUserService(userID)
 	if err != nil {
-		return pxerr.Code("CONTROLLER_ERROR").
+		return aerr.Code("CONTROLLER_ERROR").
 			Message("failed to handle user request").
 			With("endpoint", "/api/users/"+userID).
 			With("method", "GET").
@@ -246,7 +246,7 @@ func HandleUserRequest(userID string) error {
 func GetUserService(userID string) error {
 	err := FindUserRepository(userID)
 	if err != nil {
-		return pxerr.Code("SERVICE_ERROR").
+		return aerr.Code("SERVICE_ERROR").
 			Message("user service failed").
 			With("service", "UserService").
 			With("operation", "GetUser").
@@ -259,7 +259,7 @@ func GetUserService(userID string) error {
 func FindUserRepository(userID string) error {
 	err := QueryDatabase("SELECT * FROM users WHERE id = ?", userID)
 	if err != nil {
-		return pxerr.Code("REPOSITORY_ERROR").
+		return aerr.Code("REPOSITORY_ERROR").
 			Message("failed to find user in repository").
 			StackTrace().
 			With("user_id", userID).
@@ -274,7 +274,7 @@ func QueryDatabase(query string, args ...any) error {
 	// Simulate a database connection error
 	dbErr := errors.New("connection timeout after 5s")
 
-	return pxerr.Code("DB_ERROR").
+	return aerr.Code("DB_ERROR").
 		Message("database query failed").
 		StackTrace().
 		With("query", query).
@@ -325,11 +325,11 @@ Output shows all errors in a **flat array** with full context:
         },
         "message": "database query failed",
         "stacktrace": [
-          "main.QueryDatabase (/home/user/pxerr/examples/nested_layers.go:75)",
-          "main.FindUserRepository (/home/user/pxerr/examples/nested_layers.go:52)",
-          "main.GetUserService (/home/user/pxerr/examples/nested_layers.go:39)",
-          "main.HandleUserRequest (/home/user/pxerr/examples/nested_layers.go:26)",
-          "main.main (/home/user/pxerr/examples/nested_layers.go:18)"
+          "main.QueryDatabase (/home/user/aerr/examples/nested_layers.go:75)",
+          "main.FindUserRepository (/home/user/aerr/examples/nested_layers.go:52)",
+          "main.GetUserService (/home/user/aerr/examples/nested_layers.go:39)",
+          "main.HandleUserRequest (/home/user/aerr/examples/nested_layers.go:26)",
+          "main.main (/home/user/aerr/examples/nested_layers.go:18)"
         ]
       },
       {
@@ -340,7 +340,7 @@ Output shows all errors in a **flat array** with full context:
 }
 ```
 
-## Why pxerr?
+## Why aerr?
 
 **Simple** - Builder pattern that chains naturally with your code.
 
