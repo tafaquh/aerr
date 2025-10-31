@@ -44,7 +44,7 @@ func runWithZerolog() {
 	err := HandleUserRequest("12345")
 	if err != nil {
 		// Standard zerolog API - aerr automatically serializes to JSON!
-		logger.Error().Stack().Err(err).Msg("request failed")
+		logger.Error().Err(err).Msg("request failed")
 	}
 }
 
