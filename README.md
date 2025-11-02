@@ -1,6 +1,21 @@
-# aerr
+<div align="center">
 
-Simple error logging with stack traces for Go.
+
+<img src="./assets/aerr.png" alt="aerr" width="600"/>
+
+**Lightweight error handling with structured logging and stack trace support for Go**
+
+</div>
+
+---
+
+## Philosophy
+
+Inspired by **"air"** (water in Indonesian), aerr embodies the natural flow of water from downstream to upstream. Just as water brings life along its journey, error information should flow seamlessly through your application layers—carrying vital context from where it originates to where it's resolved.
+
+When errors flow smoothly with complete context (codes, messages, attributes, stack traces), engineers can diagnose and fix issues faster, bringing life back to their systems. aerr makes error tracking effortless, transforming debugging from a painful search into a clear path to resolution.
+
+> *"Like water flowing upstream, errors should carry the important context they've collected along their journey."*
 
 ## Features
 

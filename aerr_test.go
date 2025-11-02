@@ -45,8 +45,8 @@ func TestWrapError(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	if wrapped.Error() != "wrapped error" {
-		t.Errorf("expected message 'wrapped error', got %q", wrapped.Error())
+	if wrapped.Error() != "wrapped error: original error" {
+		t.Errorf("expected message 'wrapped error: original error', got %q", wrapped.Error())
 	}
 
 	// Check unwrapping
@@ -142,8 +142,8 @@ func TestWrapaErr(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	// When wrapping aerr errors, messages are combined
-	expectedMsg := "application startup failed: database connection failed"
+	// When wrapping aerr errors, messages are combined including the cause
+	expectedMsg := "application startup failed: database connection failed: connection refused"
 	if err2.Error() != expectedMsg {
 		t.Errorf("expected message %q, got %q", expectedMsg, err2.Error())
 	}
@@ -199,9 +199,13 @@ func TestLogaErrChain(t *testing.T) {
 	}
 	// Note: The underlying error ("syntax error") is wrapped but not part of the aerr message chain
 
-	// Check that only the top-level code is present (new behavior)
+	// Check that the outermost code is present (new behavior)
 	if !strings.Contains(output, "API_ERROR") {
 		t.Errorf("expected log to contain 'API_ERROR', got:\n%s", output)
+	}
+	// The innermost code should not override the outermost
+	if strings.Contains(output, `"code":"DB_ERROR"`) {
+		t.Errorf("expected log NOT to contain DB_ERROR as the code (should be API_ERROR), got:\n%s", output)
 	}
 
 	// Check that context fields are present in attributes

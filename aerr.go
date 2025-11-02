@@ -110,6 +110,22 @@ func Message(msg string) *aerr {
 	}
 }
 
+// ErrMsg creates a simple error with just a message.
+// This is a convenience function equivalent to Message(msg).ErrMsg("").
+func ErrMsg(msg string) error {
+	return &aerr{
+		msg:       msg,
+		skipStack: true,
+	}
+}
+
+// StackTrace starts building an error with stack trace enabled.
+func StackTrace() *aerr {
+	return &aerr{
+		skipStack: false,
+	}
+}
+
 // Code sets the error code.
 func (b *aerr) Code(code string) *aerr {
 	b.code = code
@@ -144,74 +160,78 @@ func (b *aerr) Wrap(err error) error {
 		return nil
 	}
 
-	e := &aerr{
-		msg:        b.msg,
-		code:       b.code,
-		cause:      err,
-		skipStack:  b.skipStack,
-		attributes: b.attributes,
-	}
+	b.cause = err
 
 	// If wrapping a aerr error, preserve its stack instead of creating a new one
 	aErr, ok := err.(*aerr)
 	if !ok {
 		if !b.skipStack {
-			e.stack = captureStack()
+			b.stack = captureStack()
 		}
-		return e
+		return b
 	}
 
-	if b.code == "" {
-		e.code = aErr.code
+	if aErr.code != "" {
+		b.code = aErr.code
 	}
 
 	// Optimize string concatenation using strings.Builder
 	if aErr.msg != "" {
-		if e.msg == "" {
-			e.msg = aErr.msg
+		if b.msg == "" {
+			b.msg = aErr.msg
 		} else {
 			var sb strings.Builder
-			sb.Grow(len(e.msg) + len(aErr.msg) + 2) // Pre-allocate exact size
-			sb.WriteString(e.msg)
+			sb.Grow(len(b.msg) + len(aErr.msg) + 2) // Pre-allocate exact size
+			sb.WriteString(b.msg)
 			sb.WriteString(": ")
 			sb.WriteString(aErr.msg)
-			e.msg = sb.String()
+			b.msg = sb.String()
 		}
 	}
 
 	if len(aErr.stack) > 0 {
-		e.stack = aErr.stack
-		e.skipStack = true // Don't capture a new stack since we're reusing the original
+		b.stack = aErr.stack
+		b.skipStack = true // Don't capture a new stack since we're reusing the original
 	}
 
 	// Optimize attribute merging
 	if len(aErr.attributes) > 0 {
-		if e.attributes == nil {
+		if b.attributes == nil {
 			// If no attributes yet, pre-allocate based on source size
-			e.attributes = make(map[string]any, len(aErr.attributes))
+			b.attributes = make(map[string]any, len(aErr.attributes))
 		}
 		// Use maps.Copy for efficient attribute merging (Go 1.21+)
-		maps.Copy(e.attributes, aErr.attributes)
+		maps.Copy(b.attributes, aErr.attributes)
 	}
 
-	return e
+	return b
 }
 
 // Err finalizes the builder and returns the error.
 func (b *aerr) Err(cause error) error {
-	e := &aerr{
-		msg:        b.msg,
-		code:       b.code,
-		cause:      cause,
-		skipStack:  b.skipStack,
-		attributes: b.attributes,
+	if cause != nil {
+		b.cause = cause
 	}
 
 	if !b.skipStack {
-		e.stack = captureStack()
+		b.stack = captureStack()
 	}
 
-	return e
+	return b
+}
+
+// ErrMsg finalizes the builder with a string error message and returns the error.
+// This is a convenience method equivalent to Err(errors.New(msg)).
+func (b *aerr) ErrMsg(msg string) error {
+	if msg != "" {
+		b.cause = errors.New(msg)
+	}
+
+	if !b.skipStack {
+		b.stack = captureStack()
+	}
+
+	return b
 }
 
 func (b *aerr) GetCode() string {

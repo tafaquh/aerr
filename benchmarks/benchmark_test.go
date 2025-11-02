@@ -22,8 +22,7 @@ func BenchmarkDisabled(b *testing.B) {
 		Level: slog.LevelError,
 	}))
 
-	// Don't call StackTrace() for benchmark without stack
-	err := aerr.Message("test error").Err(nil)
+	err := aerr.ErrMsg("test error")
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -39,8 +38,7 @@ func BenchmarkSimpleError(b *testing.B) {
 		Level: slog.LevelError,
 	}))
 
-	// Don't call StackTrace() for simple error without stack
-	err := aerr.Message("test error").Err(nil)
+	err := aerr.ErrMsg("test error")
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -57,7 +55,7 @@ func BenchmarkSimpleErrorWithStack(b *testing.B) {
 		Level: slog.LevelError,
 	}))
 
-	err := aerr.Message("test error").StackTrace().Err(nil)
+	err := aerr.StackTrace().ErrMsg("test error")
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -74,9 +72,7 @@ func BenchmarkErrorWith10Fields(b *testing.B) {
 		Level: slog.LevelError,
 	}))
 
-	// Don't call StackTrace() for benchmark without stack
 	err := aerr.Code("TEST_ERROR").
-		Message("test error").
 		With("field1", "value1").
 		With("field2", "value2").
 		With("field3", "value3").
@@ -87,7 +83,7 @@ func BenchmarkErrorWith10Fields(b *testing.B) {
 		With("field8", "value8").
 		With("field9", "value9").
 		With("field10", "value10").
-		Err(nil)
+		ErrMsg("test error")
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -105,7 +101,6 @@ func BenchmarkErrorWith10FieldsAndStack(b *testing.B) {
 	}))
 
 	err := aerr.Code("TEST_ERROR").
-		Message("test error").
 		StackTrace().
 		With("field1", "value1").
 		With("field2", "value2").
@@ -117,7 +112,7 @@ func BenchmarkErrorWith10FieldsAndStack(b *testing.B) {
 		With("field8", "value8").
 		With("field9", "value9").
 		With("field10", "value10").
-		Err(nil)
+		ErrMsg("test error")
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -168,11 +163,11 @@ func BenchmarkErrorChainDeep(b *testing.B) {
 		Level: slog.LevelError,
 	}))
 
-	err1 := aerr.Code("ERROR1").Message("error 1").StackTrace().With("field1", "value1").Err(nil)
-	err2 := aerr.Code("ERROR2").Message("error 2").With("field2", "value2").Wrap(err1)
-	err3 := aerr.Code("ERROR3").Message("error 3").With("field3", "value3").Wrap(err2)
-	err4 := aerr.Code("ERROR4").Message("error 4").With("field4", "value4").Wrap(err3)
-	err5 := aerr.Code("ERROR5").Message("error 5").With("field5", "value5").Wrap(err4)
+	err1 := aerr.Code("ERROR1").StackTrace().With("field1", "value1").ErrMsg("error 1")
+	err2 := aerr.Code("ERROR2").With("field2", "value2").Wrap(err1)
+	err3 := aerr.Code("ERROR3").With("field3", "value3").Wrap(err2)
+	err4 := aerr.Code("ERROR4").With("field4", "value4").Wrap(err3)
+	err5 := aerr.Code("ERROR5").With("field5", "value5").Wrap(err4)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -187,12 +182,10 @@ func BenchmarkErrorCreation(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// Don't call StackTrace() for benchmark without stack
 		_ = aerr.Code("TEST_ERROR").
-			Message("test error").
 			With("field1", "value1").
 			With("field2", "value2").
-			Err(nil)
+			ErrMsg("test error")
 	}
 }
 
@@ -202,11 +195,10 @@ func BenchmarkErrorCreationWithStack(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = aerr.Code("TEST_ERROR").
-			Message("test error").
 			StackTrace().
 			With("field1", "value1").
 			With("field2", "value2").
-			Err(nil)
+			ErrMsg("test error")
 	}
 }
 
@@ -322,10 +314,7 @@ func BenchmarkAerrZerologSimple(b *testing.B) {
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
-	// Don't call StackTrace() for benchmark without stack
-	err := aerr.Code("TEST_ERROR").
-		Message("test error").
-		Err(nil)
+	err := aerr.Code("TEST_ERROR").ErrMsg("test error")
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -340,9 +329,7 @@ func BenchmarkAerrZerologWith10Fields(b *testing.B) {
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
-	// Don't call StackTrace() for benchmark without stack
 	err := aerr.Code("TEST_ERROR").
-		Message("test error").
 		With("field1", "value1").
 		With("field2", "value2").
 		With("field3", "value3").
@@ -353,7 +340,7 @@ func BenchmarkAerrZerologWith10Fields(b *testing.B) {
 		With("field8", "value8").
 		With("field9", "value9").
 		With("field10", "value10").
-		Err(nil)
+		ErrMsg("test error")
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -369,7 +356,6 @@ func BenchmarkAerrZerologWith10FieldsAndStack(b *testing.B) {
 	logger := zerolog.New(&buf)
 
 	err := aerr.Code("TEST_ERROR").
-		Message("test error").
 		StackTrace().
 		With("field1", "value1").
 		With("field2", "value2").
@@ -381,7 +367,7 @@ func BenchmarkAerrZerologWith10FieldsAndStack(b *testing.B) {
 		With("field8", "value8").
 		With("field9", "value9").
 		With("field10", "value10").
-		Err(nil)
+		ErrMsg("test error")
 
 	b.ReportAllocs()
 	b.ResetTimer()

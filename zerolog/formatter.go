@@ -17,7 +17,7 @@ func init() {
 // This function is automatically set in init() so you can use standard zerolog API:
 //
 //	logger.Error().Stack().Err(err).Msg("request failed")
-func AerrMarshalFunc(err error) interface{} {
+func AerrMarshalFunc(err error) any {
 	if typedErr, ok := aerr.AsAerr(err); ok {
 		return zerologErrorMarshaller{err: &typedErr}
 	}
@@ -28,7 +28,7 @@ func AerrMarshalFunc(err error) interface{} {
 // information from aerr errors for zerolog logging.
 //
 // This function is automatically set in init() to work with zerolog's Stack() method.
-func AerrStackMarshaler(err error) interface{} {
+func AerrStackMarshaler(err error) any {
 	if aErr, ok := aerr.AsAerr(err); ok {
 		if stack := aErr.Traces(); len(stack) > 0 {
 			return stack
