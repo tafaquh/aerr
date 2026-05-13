@@ -76,8 +76,7 @@ Output:
       "table": "users"
     },
     "stacktrace": [
-      "/path/to/main.go.(main.main):34",
-      "/usr/local/go/src/runtime/proc.go.(runtime.main):250"
+      "/path/to/main.go.(main.main):34"
     ]
   }
 }
@@ -186,7 +185,9 @@ err := aerr.Code("ERR002").
 
 ### Stack Trace Format
 
-Stack traces use the format `file_path.(package.function):line`:
+Stack traces use the format `file_path.(package.function):line`. Frames in
+the Go standard library (`runtime.*`, `testing.*`, `errors.*`, etc.) are
+filtered out automatically so you only see your own code:
 
 ```json
 "stacktrace": [
@@ -200,15 +201,35 @@ Stack traces use the format `file_path.(package.function):line`:
 
 ## API
 
-### Builder Pattern
-- `Code(code string) *aerr` - Start with error code
-- `Message(msg string) *aerr` - Start with message
-- `(*aerr).Code(code) *aerr` - Set error code
-- `(*aerr).Message(msg) *aerr` - Set message
-- `(*aerr).With(key, val) *aerr` - Add field
-- `(*aerr).StackTrace() *aerr` - Enable stack capture (by default stack is not captured)
-- `(*aerr).Err(cause error) error` - Build error with cause
-- `(*aerr).Wrap(err error) error` - Wrap another error (creates chain)
+### Building an error
+
+- `Code(code string) *Builder` — start with an error code
+- `Message(msg string) *Builder` — start with a message
+- `StackTrace() *Builder` — start with stack capture enabled
+- `ErrMsg(msg string) error` — one-shot shortcut for `Message(msg).Err(nil)`
+- `(*Builder).Code(code) *Builder` — set the error code
+- `(*Builder).Message(msg) *Builder` — set the message
+- `(*Builder).StackTrace() *Builder` — enable stack capture (off by default)
+- `(*Builder).With(key string, value any) *Builder` — add an attribute; re-using a key overwrites its value
+- `(*Builder).Err(cause error) error` — finalize, optionally wrapping a non-aerr cause
+- `(*Builder).ErrMsg(msg string) error` — finalize with a plain-text cause
+- `(*Builder).Wrap(err error) error` — finalize wrapping another error; returns nil if err is nil
+
+A `*Builder` is not safe for concurrent use and should not be reused after
+`Err` / `ErrMsg` / `Wrap`. The returned `*Error` is immutable and safe to
+share or log from multiple goroutines.
+
+### Inspecting an error
+
+- `AsAerr(err error) (*Error, bool)` — extract an `*Error` from anywhere in a chain
+- `(*Error).Error() string` — the combined message
+- `(*Error).Unwrap() error` — the wrapped cause (works with `errors.Is` / `errors.As`)
+- `(*Error).Code() string` — the error code
+- `(*Error).NumAttrs() int` — number of attributes
+- `(*Error).RangeAttrs(func(key string, value any) bool)` — iterate attributes without allocating
+- `(*Error).Attributes() map[string]any` — snapshot attributes as a freshly-allocated map
+- `(*Error).Traces() []string` — render the filtered stack trace
+- `(*Error).LogValue() slog.Value` — used automatically by `log/slog`
 
 ## Complete Example - Multi-Layer Application
 
@@ -409,6 +430,11 @@ Output with **zerolog** (same simplified structure):
 
 aerr provides optional zerolog integration through a separate package for high-performance logging.
 
+> **Note:** importing `github.com/tafaquh/aerr/zerolog` has a side effect — it
+> overwrites the global `zerolog.ErrorMarshalFunc` and
+> `zerolog.ErrorStackMarshaler`. Non-aerr errors continue to use zerolog's
+> default behavior, but only one marshaler can be active per process.
+
 ### Installation
 
 ```bash
@@ -440,130 +466,119 @@ func main() {
 
 ## Performance Benchmarks
 
-All benchmarks run on Intel Core Ultra 9 185H with 3 second benchmark time.
+All benchmarks run on Intel Core Ultra 9 185H with 3-second benchmark time.
 
 ### slog Integration (Default)
 
 ```
-BenchmarkDisabled-4                      	132M	    29.41 ns/op	      48 B/op	       1 allocs/op
-BenchmarkSimpleError-4                   	6.6M	   555.6 ns/op	     208 B/op	       2 allocs/op
-BenchmarkSimpleErrorWithStack-4          	1.6M	  2292 ns/op	    1481 B/op	      11 allocs/op
-BenchmarkErrorWith10Fields-4             	1.5M	  2447 ns/op	    1184 B/op	      25 allocs/op
-BenchmarkErrorWith10FieldsAndStack-4     	869K	  4301 ns/op	    2490 B/op	      34 allocs/op
-BenchmarkErrorChain-4                    	974K	  3555 ns/op	    2090 B/op	      26 allocs/op
-BenchmarkErrorChainDeep-4                	1.0M	  3183 ns/op	    1978 B/op	      24 allocs/op
-BenchmarkErrorCreation-4                 	27M	   140.8 ns/op	     432 B/op	       3 allocs/op
-BenchmarkErrorCreationWithStack-4        	3.1M	  1185 ns/op	     960 B/op	       6 allocs/op
+BenchmarkDisabled-8                      	100M	   32.0 ns/op	      48 B/op	   1 allocs/op
+BenchmarkSimpleError-8                   	6.0M	  590.0 ns/op	     208 B/op	   2 allocs/op
+BenchmarkSimpleErrorWithStack-8          	1.2M	  2770  ns/op	    1417 B/op	  12 allocs/op
+BenchmarkErrorWith10Fields-8             	2.7M	  1330  ns/op	     624 B/op	   3 allocs/op
+BenchmarkErrorWith10FieldsAndStack-8     	844K	  3932  ns/op	    1833 B/op	  13 allocs/op
+BenchmarkErrorChain-8                    	1.3M	  2770  ns/op	    1289 B/op	  11 allocs/op
+BenchmarkErrorChainDeep-8                	1.0M	  3272  ns/op	    1593 B/op	  13 allocs/op
+BenchmarkErrorCreation-8                 	40M 	  102   ns/op	     240 B/op	   3 allocs/op
+BenchmarkErrorCreationWithStack-8        	5.9M	  674   ns/op	     288 B/op	   4 allocs/op
 ```
 
 ### Logger Comparison Benchmarks
 
-**Native Loggers (baseline):**
+**Native loggers (baseline):**
 ```
 # Zerolog (fastest)
-BenchmarkZerologSimple-4                 	59M	  59.57 ns/op	   0 B/op	   0 allocs/op
-BenchmarkZerologWith10Fields-4           	17M	 216.2 ns/op	   0 B/op	   0 allocs/op
-BenchmarkZerologWith10FieldsAndStack-4   	8.0M	 456.2 ns/op	 112 B/op	   3 allocs/op
-BenchmarkZerologErrorChain-4             	5.2M	 662.4 ns/op	 296 B/op	   7 allocs/op
+BenchmarkZerologSimple-8                 	62M 	  63.3 ns/op	   0 B/op	   0 allocs/op
+BenchmarkZerologWith10Fields-8           	15M 	 229.8 ns/op	   0 B/op	   0 allocs/op
+BenchmarkZerologWith10FieldsAndStack-8   	8.6M	 413.3 ns/op	  16 B/op	   2 allocs/op
+BenchmarkZerologErrorChain-8             	5.9M	 615.4 ns/op	 200 B/op	   6 allocs/op
 
 # Zap (very fast, structured)
-BenchmarkZapSimple-4                     	15M	 224.8 ns/op	   0 B/op	   0 allocs/op
-BenchmarkZapWith10Fields-4               	5.5M	 695.3 ns/op	 704 B/op	   1 allocs/op
-BenchmarkZapErrorChain-4                 	4.0M	 920.7 ns/op	 640 B/op	   6 allocs/op
+BenchmarkZapSimple-8                     	14M 	 248.7 ns/op	   0 B/op	   0 allocs/op
+BenchmarkZapWith10Fields-8               	5.3M	 723.4 ns/op	 704 B/op	   1 allocs/op
+BenchmarkZapErrorChain-8                 	3.5M	1006   ns/op	 641 B/op	   6 allocs/op
 
 # Logrus (mature, flexible)
-BenchmarkLogrusSimple-4                  	3.5M	  1079 ns/op	 872 B/op	  19 allocs/op
-BenchmarkLogrusWith10Fields-4            	824K	  4149 ns/op	3979 B/op	  52 allocs/op
-BenchmarkLogrusErrorChain-4              	1.0M	  3456 ns/op	2661 B/op	  45 allocs/op
-
-# slog (standard library)
-BenchmarkSimpleError-4                   	6.6M	 555.6 ns/op	 208 B/op	   2 allocs/op
-BenchmarkErrorWith10Fields-4             	1.5M	  2447 ns/op	1184 B/op	  25 allocs/op
-BenchmarkErrorChain-4                    	974K	  3555 ns/op	2090 B/op	  26 allocs/op
+BenchmarkLogrusSimple-8                  	3.1M	 1266  ns/op	 873 B/op	  19 allocs/op
+BenchmarkLogrusWith10Fields-8            	805K	 4507  ns/op	3982 B/op	  52 allocs/op
+BenchmarkLogrusErrorChain-8              	990K	 3915  ns/op	2663 B/op	  45 allocs/op
 ```
 
-**Aerr with Zerolog:**
+**Aerr with zerolog:**
 ```
-BenchmarkAerrZerologSimple-4             	10M	 344.2 ns/op	 128 B/op	   4 allocs/op
-BenchmarkAerrZerologWith10Fields-4       	1.8M	  2057 ns/op	1104 B/op	  27 allocs/op
-BenchmarkAerrZerologWith10FieldsAndStack-4  	1.0M	  3248 ns/op	2410 B/op	  36 allocs/op
-BenchmarkAerrZerologErrorChain-4         	1.3M	  2542 ns/op	2025 B/op	  28 allocs/op
+BenchmarkAerrZerologSimple-8             	32M 	 116   ns/op	   0 B/op	   0 allocs/op
+BenchmarkAerrZerologWith10Fields-8       	2.7M	1423   ns/op	1120 B/op	  20 allocs/op
+BenchmarkAerrZerologWith10FieldsAndStack-8	831K	3778   ns/op	2034 B/op	  27 allocs/op
+BenchmarkAerrZerologErrorChain-8         	2.3M	1572   ns/op	1329 B/op	  17 allocs/op
 ```
 
 ### Comparison Table
 
-**Simple Error:**
+**Simple error:**
 | Logger | Time | Bytes | Allocs | vs Fastest |
 |--------|------|-------|--------|------------|
-| Zerolog | 59.57 ns | 0 B | 0 | **baseline** (fastest) |
-| Zap | 224.8 ns | 0 B | 0 | 3.8x slower |
-| Aerr + Zerolog | 344.2 ns | 128 B | 4 | **5.8x slower** ⚡ |
-| Aerr + slog | 555.6 ns | 208 B | 2 | 9.3x slower ⚡ |
-| Logrus | 1079 ns | 872 B | 19 | 18x slower |
+| Zerolog | 63.3 ns | 0 B | 0 | **baseline** |
+| Aerr + zerolog | 116 ns | 0 B | 0 | 1.8× slower ⚡ |
+| Zap | 248.7 ns | 0 B | 0 | 3.9× slower |
+| Aerr + slog | 590 ns | 208 B | 2 | 9.3× slower |
+| Logrus | 1266 ns | 873 B | 19 | 20× slower |
 
-**10 Fields:**
+**10 fields:**
 | Logger | Time | Bytes | Allocs | vs Fastest |
 |--------|------|-------|--------|------------|
-| Zerolog | 216.2 ns | 0 B | 0 | **baseline** (fastest) |
-| Zap | 695.3 ns | 704 B | 1 | 3.2x slower |
-| Aerr + Zerolog | 2057 ns | 1104 B | 27 | **9.5x slower** ⚡ |
-| Aerr + slog | 2447 ns | 1184 B | 25 | 11x slower ⚡ |
-| Logrus | 4149 ns | 3979 B | 52 | 19x slower |
+| Zerolog | 229.8 ns | 0 B | 0 | **baseline** |
+| Zap | 723.4 ns | 704 B | 1 | 3.1× slower |
+| Aerr + slog | 1330 ns | 624 B | 3 | 5.8× slower ⚡ |
+| Aerr + zerolog | 1423 ns | 1120 B | 20 | 6.2× slower |
+| Logrus | 4507 ns | 3982 B | 52 | 20× slower |
 
-**Error Chain (3 levels with fields):**
+**Error chain (3 levels with fields):**
 | Logger | Time | Bytes | Allocs | vs Fastest |
 |--------|------|-------|--------|------------|
-| Zerolog | 662.4 ns | 296 B | 7 | **baseline** (fastest) |
-| Zap | 920.7 ns | 640 B | 6 | 1.4x slower |
-| Aerr + Zerolog | 2542 ns | 2025 B | 28 | **3.8x slower** ⚡ |
-| Logrus | 3456 ns | 2661 B | 45 | 5.2x slower |
-| Aerr + slog | 3555 ns | 2090 B | 26 | 5.4x slower ⚡ |
+| Zerolog | 615.4 ns | 200 B | 6 | **baseline** |
+| Zap | 1006 ns | 641 B | 6 | 1.6× slower |
+| Aerr + zerolog | 1572 ns | 1329 B | 17 | 2.6× slower ⚡ |
+| Aerr + slog | 2770 ns | 1289 B | 11 | 4.5× slower |
+| Logrus | 3915 ns | 2663 B | 45 | 6.4× slower |
 
-**Key Insights:**
-- **Zerolog** is the fastest logger, with zero allocations for simple cases
-- **Zap** is close behind, also with excellent performance and zero allocs for simple cases
-- **Logrus** is slower but very mature and flexible
-- **Aerr is highly optimized** - Only 3.8-9.5x slower than zerolog while providing automatic attribute merging, code tracking, and stack trace propagation ⚡
-- **Error chains show excellent relative performance** - aerr + zerolog is only 3.8x slower vs native zerolog, demonstrating efficient structured error handling
-- **Significant performance improvements** - Through lazy allocation, memory pooling, and efficient string building, aerr achieves near-optimal performance
+**Key insights:**
+- **Zerolog** is the fastest logger, with zero allocations for simple cases.
+- **Aerr + zerolog** is the second-fastest for simple errors and *also* zero-allocation per log call.
+- **Aerr's structured-attribute output** drops the 10-field slog cost from 25 allocs to 3, because `LogValue` now emits typed `slog.Attr`s in a group instead of a reflected `map[string]any`.
+- **Error chains** stay competitive — aerr + zerolog is only 2.6× slower than raw zerolog while doing automatic chain merging, attribute deduplication, and stack propagation.
 
-**Note:** All error chain benchmarks use `fmt.Errorf` with `%w` for proper error wrapping, but fields must be added manually. aerr provides automatic attribute merging from the entire error chain, code tracking, and stack trace propagation with minimal overhead.
+**Note:** native error-chain benchmarks use `fmt.Errorf` with `%w` and add fields manually. aerr merges messages, codes, attributes, and stack traces across the chain automatically.
 
 ### Performance Analysis
 
 **When to use each logger:**
 
-- **Zerolog**: Maximum performance (60-662 ns/op), zero allocations for simple cases, manual field management
-- **Zap**: Excellent performance (225-920 ns/op), structured logging, production-ready
-- **Logrus**: Mature ecosystem (1079-4149 ns/op), flexible, good for existing projects
-- **slog**: Standard library (556-3555 ns/op), no external dependencies, built-in Go support
-- **Aerr + Zerolog**: Structured error chains (344-2542 ns/op) with automatic context merging - **excellent for complex error handling** ⚡
-- **Aerr + slog**: Standard library with structured errors (556-3555 ns/op), good balance of features and compatibility
+- **Zerolog**: maximum performance (63–615 ns/op), zero allocations for simple cases, manual field management.
+- **Zap**: excellent performance (249–1006 ns/op), structured logging, production-ready.
+- **Logrus**: mature ecosystem (1266–4507 ns/op), flexible, good for existing projects.
+- **slog**: standard library (590–2770 ns/op), no external dependencies.
+- **Aerr + zerolog**: structured error chains with zero-alloc simple logging (116–1572 ns/op) — **best for rich error handling on hot paths**. ⚡
+- **Aerr + slog**: stdlib only, structured errors (590–2770 ns/op).
 
-**Optimization Techniques Applied:**
-- **Lazy map allocation** - Maps only created when `With()` is called, saving allocations for simple errors
-- **Pre-sized allocations** - Maps and slices pre-allocated with appropriate capacity to prevent reallocation
-- **Memory pooling** - Reusable byte buffers and string slices via `sync.Pool` to reduce GC pressure
-- **Efficient string building** - `strings.Builder` for concatenation instead of `+` operator
-- **Modern Go stdlib** - Using `maps.Copy()` for efficient attribute merging (Go 1.21+)
-- **Conditional stack traces** - Stack traces only captured when explicitly enabled with `StackTrace()`
-- **Early returns** - Check for empty stacks before processing to avoid unnecessary work
+**Optimization techniques applied:**
+- **Immutable `*Error`, mutable `*Builder`** — separates the construction phase from the read phase so the error can be logged from multiple goroutines without copying.
+- **Ordered attribute slice** — `[]attr` instead of `map[string]any`. Insertion order is deterministic and the map header allocation disappears entirely.
+- **Typed slog group** — `LogValue` emits typed `slog.Attr`s inside a group, so slog never has to reflect over a `map[string]any`.
+- **Zerolog `Dict` + `Strs`** — the zerolog adapter writes attributes through a typed dict and the stack through a `[]string` field, avoiding the reflection path in `Event.Interface`.
+- **Fast-path `AsAerr`** — direct type assertion before falling back to `errors.As`, so the zerolog adapter pays the chain-walk cost at most once per error.
+- **Conditional stack capture** — stacks are captured only when `StackTrace()` is called, and inner errors' PCs are inherited by `Wrap` so each chain captures at most once.
+- **Real frame filtering** — `runtime.*`, `testing.*`, and stdlib frames are dropped at render time so users only see their own code.
 
 **Trade-offs:**
-- aerr adds minimal overhead for rich error context (codes, messages, attributes, stack traces)
-- Error chain simplification (combining messages, merging attributes) is highly optimized
-- Stack trace capture adds ~1-2 µs per error when enabled (disabled by default)
-- The convenience of automatic error structuring comes with very reasonable performance cost
-- **Excellent performance across all scenarios** - aerr is only 3.8-9.5x slower than zerolog while providing significantly more functionality
-- Native loggers require manual field management and don't provide structured error wrapping features that aerr offers
+- Stack capture adds roughly 500 ns–2 µs per error depending on depth; it's off by default.
+- The builder/error split costs one extra small allocation at error-creation time compared to a single mutable struct.
+- For sub-microsecond hot paths with manual field management, raw zerolog is still ~2× faster than aerr + zerolog.
 
 **Recommendation:**
-- Use **zerolog or zap** for extreme hot paths where you need sub-microsecond logging
-- Use **logrus** if you're already invested in its ecosystem
-- Use **slog** for standard library compatibility without external dependencies
-- Use **aerr + zerolog** when you need structured error chains with automatic attribute merging - **now with excellent performance** ⚡
-- Use **aerr + slog** for standard library integration with structured error management
-- **aerr is production-ready** - The optimizations make it suitable for high-throughput applications while maintaining rich error context
+- Use **zerolog or zap** when you need sub-microsecond logging and can manage fields manually.
+- Use **logrus** if you're already invested in its ecosystem.
+- Use **slog** for stdlib-only setups without rich error handling.
+- Use **aerr + zerolog** when you need automatic error-chain merging, codes, and stack traces with zero-allocation simple logging.
+- Use **aerr + slog** for stdlib-only setups that still want structured error chains.
 
 ### Run Benchmarks
 
