@@ -1,3 +1,12 @@
+// Package aerrzerolog wires aerr errors into github.com/rs/zerolog so
+// that the standard zerolog API renders aerr errors with their full
+// structured payload.
+//
+// Importing this package has a side effect: it overwrites the global
+// zerolog.ErrorMarshalFunc and zerolog.ErrorStackMarshaler. Use a blank
+// import to enable the integration:
+//
+//	import _ "github.com/tafaquh/aerr/zerolog"
 package aerrzerolog
 
 import (
@@ -6,67 +15,58 @@ import (
 )
 
 func init() {
-	// Configure zerolog to use aerr's JSON marshaling
 	zerolog.ErrorMarshalFunc = AerrMarshalFunc
 	zerolog.ErrorStackMarshaler = AerrStackMarshaler
 }
 
-// AerrMarshalFunc returns a marshaller function that converts aerr errors
-// into their JSON representation for zerolog logging.
-//
-// This function is automatically set in init() so you can use standard zerolog API:
-//
-//	logger.Error().Stack().Err(err).Msg("request failed")
+// AerrMarshalFunc returns a zerolog.LogObjectMarshaler when err carries an
+// *aerr.Error somewhere in its chain. Non-aerr errors fall through to
+// zerolog's default handling.
 func AerrMarshalFunc(err error) any {
-	if typedErr, ok := aerr.AsAerr(err); ok {
-		return zerologErrorMarshaller{err: &typedErr}
+	if e, ok := aerr.AsAerr(err); ok {
+		return aerrMarshaller{e: e}
 	}
 	return err
 }
 
-// AerrStackMarshaler returns a marshaller function that extracts stack trace
-// information from aerr errors for zerolog logging.
-//
-// This function is automatically set in init() to work with zerolog's Stack() method.
+// AerrStackMarshaler exposes aerr's captured stack to zerolog's Stack()
+// builder. It returns nil when there is no stack to render so zerolog
+// can omit the field entirely.
 func AerrStackMarshaler(err error) any {
-	if aErr, ok := aerr.AsAerr(err); ok {
-		if stack := aErr.Traces(); len(stack) > 0 {
+	if e, ok := aerr.AsAerr(err); ok {
+		if stack := e.Traces(); len(stack) > 0 {
 			return stack
 		}
 	}
 	return nil
 }
 
-// zerologErrorMarshaller implements zerolog's LogObjectMarshaler interface
-// to provide structured serialization of aerr errors.
-type zerologErrorMarshaller struct {
-	err error
+// aerrMarshaller renders an *aerr.Error directly into a zerolog event,
+// avoiding the map/reflection path of zerolog.Event.Interface.
+type aerrMarshaller struct {
+	e *aerr.Error
 }
 
-// MarshalZerologObject implements zerolog.LogObjectMarshaler for high-performance zerolog integration.
-func (m zerologErrorMarshaller) MarshalZerologObject(evt *zerolog.Event) {
-	if m.err == nil {
+// MarshalZerologObject implements zerolog.LogObjectMarshaler.
+func (m aerrMarshaller) MarshalZerologObject(evt *zerolog.Event) {
+	if m.e == nil {
 		return
 	}
-
-	aErr, ok := aerr.AsAerr(m.err)
-	if !ok {
-		return
-	}
-
-	if code := aErr.GetCode(); code != "" {
+	if code := m.e.Code(); code != "" {
 		evt.Str("code", code)
 	}
-
-	if msg := aErr.Error(); msg != "" {
+	if msg := m.e.Error(); msg != "" {
 		evt.Str("message", msg)
 	}
-
-	if attributes := aErr.GetAttributes(); len(attributes) > 0 {
-		evt.Interface("attributes", attributes)
+	if m.e.NumAttrs() > 0 {
+		dict := zerolog.Dict()
+		m.e.RangeAttrs(func(k string, v any) bool {
+			dict.Interface(k, v)
+			return true
+		})
+		evt.Dict("attributes", dict)
 	}
-	if stacktraces := aErr.Traces(); len(stacktraces) > 0 {
-		evt.Interface("stacktrace", stacktraces)
+	if traces := m.e.Traces(); len(traces) > 0 {
+		evt.Strs("stacktrace", traces)
 	}
-
 }

@@ -1,314 +1,133 @@
+// Package aerr provides structured errors that carry an error code, a
+// message, arbitrary key/value attributes, and an optional stack trace.
+// Errors are built with a fluent *Builder API and implement slog.LogValuer
+// so they integrate directly with log/slog and the optional zerolog
+// adapter in the github.com/tafaquh/aerr/zerolog package.
 package aerr
 
-// Package aerr provides simple error logging with stack traces
 import (
 	"errors"
 	"log/slog"
-	"maps"
-	"runtime"
-	"strconv"
-	"strings"
-	"sync"
 )
 
-var bufPool = sync.Pool{
-	New: func() any {
-		b := make([]byte, 0, 256)
-		return &b
-	},
+// Error is the immutable error value produced by *Builder.Err and
+// *Builder.Wrap. It implements error, slog.LogValuer, and supports
+// errors.Is / errors.As via the embedded cause.
+//
+// Once an *Error has been returned from a *Builder method it must not be
+// mutated; the type does not expose any setter.
+type Error struct {
+	code  string
+	msg   string
+	cause error
+	attrs []attr
+	pcs   []uintptr
 }
 
-var strSlicePool = sync.Pool{
-	New: func() any {
-		s := make([]string, 0, 16)
-		return &s
-	},
-}
-
-// aerr provides a fluent API for constructing errors.
-type aerr struct {
-	msg        string
-	code       string
-	cause      error
-	stack      []uintptr
-	skipStack  bool
-	attributes map[string]any
-}
-
-// Error implements the error interface.
-func (e *aerr) Error() string {
+// Error returns the combined message of the error chain.
+func (e *Error) Error() string {
 	if e == nil {
 		return ""
 	}
 	return e.msg
 }
 
-// Unwrap implements error unwrapping.
-func (e *aerr) Unwrap() error {
+// Unwrap returns the wrapped cause, if any.
+func (e *Error) Unwrap() error {
 	if e == nil {
 		return nil
 	}
 	return e.cause
 }
 
-// AsAerr checks if an error is an aerr error and returns it along with a boolean indicating success.
-func AsAerr(err error) (aerr, bool) {
-	var e *aerr
-	ok := errors.As(err, &e)
-	if ok && e != nil {
-		return *e, ok
+// Code returns the error code, or "" when unset.
+func (e *Error) Code() string {
+	if e == nil {
+		return ""
 	}
-	return aerr{}, ok
+	return e.code
 }
 
-// LogValue implements slog.LogValuer for automatic structured logging.
-// It shows only the last code and builds a single combined message from the error chain.
-func (e *aerr) LogValue() slog.Value {
+// NumAttrs returns the number of attached attributes.
+func (e *Error) NumAttrs() int {
+	if e == nil {
+		return 0
+	}
+	return len(e.attrs)
+}
+
+// RangeAttrs invokes fn for each attribute in insertion order. Iteration
+// stops early if fn returns false.
+func (e *Error) RangeAttrs(fn func(key string, value any) bool) {
+	if e == nil {
+		return
+	}
+	for _, a := range e.attrs {
+		if !fn(a.key, a.val) {
+			return
+		}
+	}
+}
+
+// Attributes returns the attributes as a fresh map. Prefer RangeAttrs in
+// hot paths to avoid the allocation.
+func (e *Error) Attributes() map[string]any {
+	if e == nil || len(e.attrs) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(e.attrs))
+	for _, a := range e.attrs {
+		out[a.key] = a.val
+	}
+	return out
+}
+
+// Traces returns the formatted stack trace, or nil when none was captured.
+func (e *Error) Traces() []string {
+	if e == nil {
+		return nil
+	}
+	return renderTraces(e.pcs)
+}
+
+// LogValue implements slog.LogValuer, producing a group with the keys
+// message, code, attributes, and stacktrace (each emitted only when set).
+func (e *Error) LogValue() slog.Value {
 	if e == nil {
 		return slog.Value{}
 	}
-
-	// Pre-allocate attrs with exact capacity needed (max 4 fields)
-	attrs := make([]slog.Attr, 0, 4)
-
-	// Always include message first
-	attrs = append(attrs, slog.String("message", e.Error()))
-
-	// Add code if present
-	if code := e.GetCode(); code != "" {
-		attrs = append(attrs, slog.String("code", code))
+	out := make([]slog.Attr, 0, 4)
+	if e.msg != "" {
+		out = append(out, slog.String("message", e.msg))
 	}
-
-	// Add attributes if present
-	if attributes := e.GetAttributes(); len(attributes) > 0 {
-		attrs = append(attrs, slog.Any("attributes", attributes))
+	if e.code != "" {
+		out = append(out, slog.String("code", e.code))
 	}
-
-	// Add stacktrace last if present
-	if len(e.stack) > 0 {
-		if stacktraces := e.Traces(); len(stacktraces) > 0 {
-			attrs = append(attrs, slog.Any("stacktrace", stacktraces))
+	if len(e.attrs) > 0 {
+		sub := make([]slog.Attr, len(e.attrs))
+		for i, a := range e.attrs {
+			sub[i] = slog.Any(a.key, a.val)
 		}
+		out = append(out, slog.Attr{Key: "attributes", Value: slog.GroupValue(sub...)})
 	}
-
-	return slog.GroupValue(attrs...)
-}
-
-// Code starts building an error with an error code.
-func Code(code string) *aerr {
-	return &aerr{
-		code:      code,
-		skipStack: true, // Default to skip stack unless explicitly enabled
+	if traces := e.Traces(); len(traces) > 0 {
+		out = append(out, slog.Any("stacktrace", traces))
 	}
+	return slog.GroupValue(out...)
 }
 
-// Message starts building an error with a message.
-func Message(msg string) *aerr {
-	return &aerr{
-		msg:       msg,
-		skipStack: true, // Default to skip stack unless explicitly enabled
-	}
-}
-
-// ErrMsg creates a simple error with just a message.
-// This is a convenience function equivalent to Message(msg).ErrMsg("").
-func ErrMsg(msg string) error {
-	return &aerr{
-		msg:       msg,
-		skipStack: true,
-	}
-}
-
-// StackTrace starts building an error with stack trace enabled.
-func StackTrace() *aerr {
-	return &aerr{
-		skipStack: false,
-	}
-}
-
-// Code sets the error code.
-func (b *aerr) Code(code string) *aerr {
-	b.code = code
-	return b
-}
-
-// Message sets the error message.
-func (b *aerr) Message(msg string) *aerr {
-	b.msg = msg
-	return b
-}
-
-// With adds a key-value field to the error.
-func (b *aerr) With(key string, value any) *aerr {
-	if b.attributes == nil {
-		b.attributes = make(map[string]any, 4) // Pre-allocate for typical usage
-	}
-	b.attributes[key] = value
-	return b
-}
-
-// StackTrace enables stack trace capture.
-func (b *aerr) StackTrace() *aerr {
-	b.skipStack = false
-	return b
-}
-
-// Wrap wraps another aerr error, preserving its stack trace and chain.
-// This allows building error chains while maintaining all context.
-func (b *aerr) Wrap(err error) error {
+// AsAerr extracts an *Error from anywhere in err's chain. The first return
+// value is non-nil when the second is true.
+func AsAerr(err error) (*Error, bool) {
 	if err == nil {
-		return nil
+		return nil, false
 	}
-
-	b.cause = err
-
-	// If wrapping a aerr error, preserve its stack instead of creating a new one
-	aErr, ok := err.(*aerr)
-	if !ok {
-		if !b.skipStack {
-			b.stack = captureStack()
-		}
-		return b
+	if e, ok := err.(*Error); ok {
+		return e, true
 	}
-
-	if aErr.code != "" {
-		b.code = aErr.code
+	var e *Error
+	if errors.As(err, &e) {
+		return e, true
 	}
-
-	// Optimize string concatenation using strings.Builder
-	if aErr.msg != "" {
-		if b.msg == "" {
-			b.msg = aErr.msg
-		} else {
-			var sb strings.Builder
-			sb.Grow(len(b.msg) + len(aErr.msg) + 2) // Pre-allocate exact size
-			sb.WriteString(b.msg)
-			sb.WriteString(": ")
-			sb.WriteString(aErr.msg)
-			b.msg = sb.String()
-		}
-	}
-
-	if len(aErr.stack) > 0 {
-		b.stack = aErr.stack
-		b.skipStack = true // Don't capture a new stack since we're reusing the original
-	}
-
-	// Optimize attribute merging
-	if len(aErr.attributes) > 0 {
-		if b.attributes == nil {
-			// If no attributes yet, pre-allocate based on source size
-			b.attributes = make(map[string]any, len(aErr.attributes))
-		}
-		// Use maps.Copy for efficient attribute merging (Go 1.21+)
-		maps.Copy(b.attributes, aErr.attributes)
-	}
-
-	return b
-}
-
-// Err finalizes the builder and returns the error.
-func (b *aerr) Err(cause error) error {
-	if cause != nil {
-		b.cause = cause
-	}
-
-	if !b.skipStack {
-		b.stack = captureStack()
-	}
-
-	return b
-}
-
-// ErrMsg finalizes the builder with a string error message and returns the error.
-// This is a convenience method equivalent to Err(errors.New(msg)).
-func (b *aerr) ErrMsg(msg string) error {
-	if msg != "" {
-		b.cause = errors.New(msg)
-	}
-
-	if !b.skipStack {
-		b.stack = captureStack()
-	}
-
-	return b
-}
-
-func (b *aerr) GetCode() string {
-	return b.code
-}
-
-func (b *aerr) GetAttributes() map[string]any {
-	return b.attributes
-}
-
-func (b *aerr) Traces() []string {
-	if len(b.stack) == 0 {
-		return nil
-	}
-
-	// Get string slice from pool
-	stacktracePtr := strSlicePool.Get().(*[]string)
-	stacktrace := (*stacktracePtr)[:0]
-
-	frames := runtime.CallersFrames(b.stack)
-	for {
-		frame, more := frames.Next()
-
-		// Get buffer from pool
-		bufPtr := bufPool.Get().(*[]byte)
-		buf := (*bufPtr)[:0]
-
-		// Format frame using pooled buffer
-		buf = append(buf, frame.File...)
-		buf = append(buf, '.', '(')
-		buf = append(buf, frame.Function...)
-		buf = append(buf, ')', ':')
-		buf = strconv.AppendInt(buf, int64(frame.Line), 10)
-		frameStr := string(buf)
-
-		// Return buffer to pool
-		*bufPtr = buf
-		bufPool.Put(bufPtr)
-		stacktrace = append(stacktrace, frameStr)
-
-		if !more {
-			break
-		}
-	}
-
-	// Make a copy to return and put the slice back to pool
-	result := make([]string, len(stacktrace))
-	copy(result, stacktrace)
-	*stacktracePtr = stacktrace
-	strSlicePool.Put(stacktracePtr)
-
-	return result
-}
-
-// captureStack captures the current stack trace with intelligent filtering.
-// It excludes frames from the Go standard library (GOROOT) and internal
-// aerr package frames to provide cleaner, more relevant stack traces.
-func captureStack() []uintptr {
-	const maxDepth = 32
-	var pcs [maxDepth]uintptr
-
-	// Capture raw program counters starting from caller's caller
-	// Skip: captureStack, Err/Wrap, runtime.Callers
-	n := runtime.Callers(3, pcs[:])
-
-	// Filter frames to exclude irrelevant ones
-	filtered := make([]uintptr, 0, n)
-	frames := runtime.CallersFrames(pcs[:n])
-
-	for {
-		frame, more := frames.Next()
-		filtered = append(filtered, frame.PC)
-
-		if !more {
-			break
-		}
-	}
-
-	return filtered
+	return nil, false
 }
