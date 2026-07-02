@@ -1,47 +1,20 @@
 version: 2
 
 updates:
-  # Root module currently has zero dependencies, but this keeps it
-  # covered the moment that changes, and needs to exist for Dependabot
-  # to manage the go.work-adjacent modules consistently.
+  # A single gomod entry covering every module in the workspace (root plus
+  # each go.work member). Using `directories` instead of five separate
+  # `directory` entries means a version bump that touches shared or
+  # cross-module dependencies (e.g. zerolog, zap, or their transitive
+  # deps) arrives as one PR with consistent versions everywhere, instead
+  # of five skewed PRs that fail the workspace-wide `go mod tidy -diff`
+  # CI check.
   - package-ecosystem: "gomod"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    groups:
-      go-dependencies:
-        patterns:
-          - "*"
-
-  - package-ecosystem: "gomod"
-    directory: "/zerolog"
-    schedule:
-      interval: "weekly"
-    groups:
-      go-dependencies:
-        patterns:
-          - "*"
-
-  - package-ecosystem: "gomod"
-    directory: "/zap"
-    schedule:
-      interval: "weekly"
-    groups:
-      go-dependencies:
-        patterns:
-          - "*"
-
-  - package-ecosystem: "gomod"
-    directory: "/benchmarks"
-    schedule:
-      interval: "weekly"
-    groups:
-      go-dependencies:
-        patterns:
-          - "*"
-
-  - package-ecosystem: "gomod"
-    directory: "/examples"
+    directories:
+      - "/"
+      - "/zerolog"
+      - "/zap"
+      - "/benchmarks"
+      - "/examples"
     schedule:
       interval: "weekly"
     groups:
