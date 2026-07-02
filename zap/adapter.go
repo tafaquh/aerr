@@ -15,6 +15,7 @@
 package aerrzap
 
 import (
+	"fmt"
 	"reflect"
 	"time"
 
@@ -72,11 +73,14 @@ func (m aerrMarshaler) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	}
 	if m.e.NumAttrs() > 0 {
 		err := enc.AddObject("attributes", zapcore.ObjectMarshalerFunc(func(dict zapcore.ObjectEncoder) error {
+			var addErr error
 			m.e.RangeAttrs(func(k string, v any) bool {
-				addAttr(dict, k, v)
+				if addErr = addAttr(dict, k, v); addErr != nil {
+					return false
+				}
 				return true
 			})
-			return nil
+			return addErr
 		}))
 		if err != nil {
 			return err
@@ -102,18 +106,25 @@ type plainMarshaler struct {
 }
 
 // MarshalLogObject implements zapcore.ObjectMarshaler.
+//
+// A genuinely-nil error yields an empty object. For any non-nil error the
+// message is rendered through errMessage, so a typed-nil or panicking
+// Error implementation cannot crash the logger.
 func (m plainMarshaler) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	if m.err == nil {
 		return nil
 	}
-	enc.AddString("message", m.err.Error())
+	enc.AddString("message", errMessage(m.err))
 	return nil
 }
 
 // addAttr writes one attribute through zapcore's typed appenders, falling
 // back to AddReflected (reflection + encoding/json) only for types
-// without a fast path.
-func addAttr(enc zapcore.ObjectEncoder, k string, v any) {
+// without a fast path. It returns any encoding error so the caller can
+// surface it instead of silently dropping the field: an AddReflected
+// failure (e.g. a channel the JSON encoder cannot marshal) would
+// otherwise leave the attribute out of the log line with no trace.
+func addAttr(enc zapcore.ObjectEncoder, k string, v any) error {
 	switch val := v.(type) {
 	case string:
 		enc.AddString(k, val)
@@ -134,14 +145,15 @@ func addAttr(enc zapcore.ObjectEncoder, k string, v any) {
 	case time.Duration:
 		enc.AddDuration(k, val)
 	case []string:
-		_ = enc.AddArray(k, stringArray(val))
+		return enc.AddArray(k, stringArray(val))
 	case []byte:
 		enc.AddByteString(k, val)
 	case error:
 		enc.AddString(k, errMessage(val))
 	default:
-		_ = enc.AddReflected(k, val)
+		return enc.AddReflected(k, val)
 	}
+	return nil
 }
 
 // stringArray adapts a []string to zapcore.ArrayMarshaler without the
@@ -156,15 +168,31 @@ func (ss stringArray) MarshalLogArray(arr zapcore.ArrayEncoder) error {
 	return nil
 }
 
-// errMessage returns an error attribute's message, tolerating typed-nil
-// values whose Error method would dereference a nil receiver. It renders
-// them as "<nil>", the same convention zapcore's error encoder uses.
-func errMessage(val error) string {
-	if val == nil {
+// errMessage returns err's message, tolerating typed-nil errors and
+// Error implementations that panic; a logging path must never crash the
+// process it is observing. zapcore recovers such panics only in its
+// ErrorType/StringerType encoders, not on the ObjectMarshaler paths this
+// adapter uses, so the recover below is what actually protects us. A
+// value-receiver error whose Error() dereferences a nil field has
+// reflect.Kind Struct, slipping past both nil-interface and pointer-nil
+// guards; the switch covers every nilable kind, and any residual panic is
+// rendered as "<panic: ...>". Nil-ish values render as "<nil>", the same
+// convention zapcore's error encoder uses.
+func errMessage(err error) (msg string) {
+	if err == nil {
 		return "<nil>"
 	}
-	if rv := reflect.ValueOf(val); rv.Kind() == reflect.Ptr && rv.IsNil() {
-		return "<nil>"
+	defer func() {
+		if r := recover(); r != nil {
+			msg = fmt.Sprintf("<panic: %v>", r)
+		}
+	}()
+	rv := reflect.ValueOf(err)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		if rv.IsNil() {
+			return "<nil>"
+		}
 	}
-	return val.Error()
+	return err.Error()
 }
