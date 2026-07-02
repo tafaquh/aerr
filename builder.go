@@ -3,8 +3,10 @@ package aerr
 import "errors"
 
 // Builder fluently configures an *Error. Each setter mutates the receiver
-// and returns it so calls can be chained. A Builder is not safe for
-// concurrent use and should be discarded after Err / Wrap / ErrMsg.
+// and returns it so calls can be chained. Finalizing (Err / ErrMsg / Wrap)
+// copies the builder's state into the issued *Error, so a Builder may be
+// kept and reused as a template for further errors. A Builder is not safe
+// for concurrent use.
 type Builder struct {
 	code         string
 	msg          string
@@ -53,7 +55,7 @@ func (b *Builder) Message(msg string) *Builder {
 	return b
 }
 
-// StackTrace enables stack capture on the next Err / Wrap.
+// StackTrace enables stack capture on the next Err / ErrMsg / Wrap.
 func (b *Builder) StackTrace() *Builder {
 	b.captureStack = true
 	return b
@@ -77,75 +79,77 @@ func (b *Builder) With(key string, value any) *Builder {
 
 // Err finalizes the builder. When cause is non-nil it is recorded as the
 // underlying error and its message is appended to the builder's message
-// with ": " as separator.
+// with ": " as separator. When the cause chain contains an *Error (even
+// behind non-aerr wrappers such as fmt.Errorf with %w), its code is
+// inherited when the builder has none, its attributes merge under the
+// outer-wins rule, and its stack trace is inherited.
 func (b *Builder) Err(cause error) error {
-	e := &Error{
-		code:  b.code,
-		msg:   b.msg,
-		attrs: b.attrs,
-	}
-	if cause != nil {
-		e.cause = cause
-		if ce, ok := cause.(*Error); ok {
-			absorb(e, ce)
-		} else {
-			e.msg = joinMsg(e.msg, cause.Error())
-		}
-	}
-	if b.captureStack && len(e.pcs) == 0 {
-		e.pcs = captureStack()
-	}
-	return e
+	return b.finalize(cause, finalizeSkip)
 }
 
 // ErrMsg finalizes the builder using msg as a plain-text cause.
 // ErrMsg("") is equivalent to Err(nil).
 func (b *Builder) ErrMsg(msg string) error {
 	if msg == "" {
-		return b.Err(nil)
+		return b.finalize(nil, finalizeSkip)
 	}
-	return b.Err(errors.New(msg))
+	return b.finalize(errors.New(msg), finalizeSkip)
 }
 
-// Wrap finalizes the builder wrapping err. When err is an *Error the outer
-// wins on conflicts: its code is preserved, its attribute values shadow
-// inner duplicates, and the inner stack trace is inherited only when the
-// outer did not request its own. Returns nil when err is nil.
+// Wrap finalizes the builder wrapping err, following the same merge rules
+// as Err. Returns nil when err is nil.
+//
+// The deepest stack wins: when the wrapped chain already carries a stack
+// trace it is inherited and an outer StackTrace() request is a no-op, so
+// each chain captures at most once and traces always point at the origin.
 func (b *Builder) Wrap(err error) error {
 	if err == nil {
 		return nil
 	}
+	return b.finalize(err, finalizeSkip)
+}
+
+// finalizeSkip is the number of frames between runtime.Callers and the
+// user call site on the finalize path: runtime.Callers, captureStack,
+// finalize, and the exported finalizer (Err / ErrMsg / Wrap).
+const finalizeSkip = 4
+
+// finalize builds the immutable *Error from the builder's state. The
+// builder's attribute slice is copied so the issued error owns its memory
+// and later reuse of the builder cannot mutate it. skip is forwarded to
+// captureStack and must count the frames between runtime.Callers and the
+// user call site.
+func (b *Builder) finalize(cause error, skip int) *Error {
 	e := &Error{
 		code:  b.code,
 		msg:   b.msg,
-		attrs: b.attrs,
-		cause: err,
+		cause: cause,
 	}
-	if ce, ok := err.(*Error); ok {
-		absorb(e, ce)
-		if b.captureStack {
-			e.pcs = captureStack()
+	var inner *Error
+	if cause != nil {
+		e.msg = joinMsg(e.msg, cause.Error())
+		inner, _ = AsAerr(cause)
+	}
+	extra := 0
+	if inner != nil {
+		extra = len(inner.attrs)
+	}
+	if n := len(b.attrs); n+extra > 0 {
+		attrs := make([]attr, n, n+extra)
+		copy(attrs, b.attrs)
+		e.attrs = attrs
+	}
+	if inner != nil {
+		if e.code == "" {
+			e.code = inner.code
 		}
-		return e
+		e.attrs = mergeAttrs(e.attrs, inner.attrs)
+		e.pcs = inner.pcs
 	}
-	e.msg = joinMsg(e.msg, err.Error())
-	if b.captureStack {
-		e.pcs = captureStack()
+	if b.captureStack && len(e.pcs) == 0 {
+		e.pcs = captureStack(skip)
 	}
 	return e
-}
-
-// absorb merges fields from inner into outer following the outer-wins rule.
-// Inner stack is inherited only when outer has none.
-func absorb(outer, inner *Error) {
-	if outer.code == "" {
-		outer.code = inner.code
-	}
-	outer.msg = joinMsg(outer.msg, inner.msg)
-	outer.attrs = mergeAttrs(outer.attrs, inner.attrs)
-	if len(outer.pcs) == 0 {
-		outer.pcs = inner.pcs
-	}
 }
 
 // joinMsg returns left + ": " + right, dropping the separator when either
@@ -157,11 +161,7 @@ func joinMsg(left, right string) string {
 	case left == "":
 		return right
 	}
-	out := make([]byte, 0, len(left)+2+len(right))
-	out = append(out, left...)
-	out = append(out, ':', ' ')
-	out = append(out, right...)
-	return string(out)
+	return left + ": " + right
 }
 
 // mergeAttrs returns dst extended with entries from src whose keys are not

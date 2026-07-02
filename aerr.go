@@ -6,7 +6,6 @@
 package aerr
 
 import (
-	"errors"
 	"log/slog"
 )
 
@@ -116,18 +115,28 @@ func (e *Error) LogValue() slog.Value {
 	return slog.GroupValue(out...)
 }
 
-// AsAerr extracts an *Error from anywhere in err's chain. The first return
-// value is non-nil when the second is true.
+// AsAerr extracts an *Error from anywhere in err's chain, walking both
+// Unwrap() error and Unwrap() []error links without reflection. The first
+// return value is non-nil when the second is true; a typed-nil *Error in
+// the chain does not count as a match.
 func AsAerr(err error) (*Error, bool) {
-	if err == nil {
-		return nil, false
-	}
-	if e, ok := err.(*Error); ok {
-		return e, true
-	}
-	var e *Error
-	if errors.As(err, &e) {
-		return e, true
+	for err != nil {
+		if e, ok := err.(*Error); ok && e != nil {
+			return e, true
+		}
+		switch x := err.(type) {
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, sub := range x.Unwrap() {
+				if e, ok := AsAerr(sub); ok {
+					return e, true
+				}
+			}
+			return nil, false
+		default:
+			return nil, false
+		}
 	}
 	return nil, false
 }
