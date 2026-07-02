@@ -8,7 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/tafaquh/aerr"
-	_ "github.com/tafaquh/aerr/zerolog" // Import to configure zerolog
+	aerrzerolog "github.com/tafaquh/aerr/zerolog"
 )
 
 var useZerolog = flag.Bool("zerolog", false, "Use zerolog instead of slog")
@@ -37,6 +37,9 @@ func runWithSlog() {
 }
 
 func runWithZerolog() {
+	// Enable aerr rendering for zerolog's Err/AnErr fields.
+	aerrzerolog.Register()
+
 	// Setup zerolog logger
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
 

@@ -1,12 +1,21 @@
 // Package aerrzerolog wires aerr errors into github.com/rs/zerolog so
 // that the standard zerolog API renders aerr errors with their full
-// structured payload.
+// structured payload (code, message, attributes, stacktrace).
 //
-// Importing this package has a side effect: it overwrites the global
-// zerolog.ErrorMarshalFunc and zerolog.ErrorStackMarshaler. Use a blank
-// import to enable the integration:
+// There are two ways to use it. Applications that want every
+// logger.Err(err) / Error().Err(err) call to render aerr errors
+// structurally should call Register once in main, following the same
+// convention as zerolog's own pkgerrors helper:
 //
-//	import _ "github.com/tafaquh/aerr/zerolog"
+//	func main() {
+//		aerrzerolog.Register()
+//		...
+//	}
+//
+// Code that prefers no process-global configuration can render a single
+// error explicitly with Object:
+//
+//	logger.Error().Object("err", aerrzerolog.Object(err)).Msg("failed")
 package aerrzerolog
 
 import (
@@ -16,14 +25,51 @@ import (
 	"github.com/tafaquh/aerr"
 )
 
-func init() {
-	zerolog.ErrorMarshalFunc = AerrMarshalFunc
-	zerolog.ErrorStackMarshaler = AerrStackMarshaler
+// Register installs aerr rendering into zerolog's process-wide
+// ErrorMarshalFunc. Errors that do not carry an *aerr.Error anywhere in
+// their chain are delegated to the marshal func that was active before
+// Register was called, so aerr coexists with other error customizations
+// instead of silently replacing them.
+//
+// Register leaves zerolog.ErrorStackMarshaler untouched: an aerr error's
+// stack trace is always rendered inside the error object itself, so
+// calling .Stack() is unnecessary (and harmless) for aerr errors, and any
+// stack marshaler configured for other error types keeps working.
+//
+// Register mutates zerolog package state; call it once from main, not
+// from library code.
+func Register() {
+	prev := zerolog.ErrorMarshalFunc
+	zerolog.ErrorMarshalFunc = func(err error) any {
+		if e, ok := aerr.AsAerr(err); ok {
+			return aerrMarshaller{e: e}
+		}
+		if prev != nil {
+			return prev(err)
+		}
+		return err
+	}
+}
+
+// Object renders err as a zerolog.LogObjectMarshaler with aerr's
+// structured payload, without touching any global state:
+//
+//	logger.Error().Object("err", aerrzerolog.Object(err)).Msg("failed")
+//
+// When err carries no *aerr.Error the object contains only the error
+// message.
+func Object(err error) zerolog.LogObjectMarshaler {
+	if e, ok := aerr.AsAerr(err); ok {
+		return aerrMarshaller{e: e}
+	}
+	return plainMarshaller{err: err}
 }
 
 // AerrMarshalFunc returns a zerolog.LogObjectMarshaler when err carries an
 // *aerr.Error somewhere in its chain. Non-aerr errors fall through to
-// zerolog's default handling.
+// zerolog's default handling. It is exported for callers composing their
+// own zerolog.ErrorMarshalFunc; most applications should call Register
+// instead.
 func AerrMarshalFunc(err error) any {
 	if e, ok := aerr.AsAerr(err); ok {
 		return aerrMarshaller{e: e}
@@ -32,8 +78,12 @@ func AerrMarshalFunc(err error) any {
 }
 
 // AerrStackMarshaler exposes aerr's captured stack to zerolog's Stack()
-// builder. It returns nil when there is no stack to render so zerolog
-// can omit the field entirely.
+// builder, for callers who assign zerolog.ErrorStackMarshaler themselves
+// and want the trace as a top-level field.
+//
+// Deprecated: Register no longer installs this. The stack is already
+// rendered inside the error object, so installing AerrStackMarshaler and
+// calling .Stack() duplicates the trace in every log line.
 func AerrStackMarshaler(err error) any {
 	if e, ok := aerr.AsAerr(err); ok {
 		if stack := e.Traces(); len(stack) > 0 {
@@ -71,6 +121,19 @@ func (m aerrMarshaller) MarshalZerologObject(evt *zerolog.Event) {
 	if traces := m.e.Traces(); len(traces) > 0 {
 		evt.Strs("stacktrace", traces)
 	}
+}
+
+// plainMarshaller renders a non-aerr error for Object.
+type plainMarshaller struct {
+	err error
+}
+
+// MarshalZerologObject implements zerolog.LogObjectMarshaler.
+func (m plainMarshaller) MarshalZerologObject(evt *zerolog.Event) {
+	if m.err == nil {
+		return
+	}
+	evt.Str("message", m.err.Error())
 }
 
 // appendAttr writes one attribute through zerolog's typed appenders,
