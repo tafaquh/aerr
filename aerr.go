@@ -7,6 +7,7 @@ package aerr
 
 import (
 	"log/slog"
+	"sync"
 )
 
 // Error is the immutable error value produced by *Builder.Err and
@@ -21,6 +22,12 @@ type Error struct {
 	cause error
 	attrs []attr
 	pcs   []uintptr
+
+	// traces caches the rendered stack so repeated logging of the same
+	// error symbolizes the PCs only once. Guarded by traceOnce, which
+	// keeps the lazy render safe under concurrent LogValue calls.
+	traceOnce sync.Once
+	traces    []string
 }
 
 // Error returns the combined message of the error chain.
@@ -82,11 +89,16 @@ func (e *Error) Attributes() map[string]any {
 }
 
 // Traces returns the formatted stack trace, or nil when none was captured.
+// The rendering is computed on first use and cached for the life of the
+// error; callers must treat the returned slice as read-only.
 func (e *Error) Traces() []string {
-	if e == nil {
+	if e == nil || len(e.pcs) == 0 {
 		return nil
 	}
-	return renderTraces(e.pcs)
+	e.traceOnce.Do(func() {
+		e.traces = renderTraces(e.pcs)
+	})
+	return e.traces
 }
 
 // LogValue implements slog.LogValuer, producing a group with the keys
