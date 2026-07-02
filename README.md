@@ -205,31 +205,40 @@ filtered out automatically so you only see your own code:
 
 - `Code(code string) *Builder` — start with an error code
 - `Message(msg string) *Builder` — start with a message
+- `Messagef(format string, args ...any) *Builder` — start with a printf-style message
 - `StackTrace() *Builder` — start with stack capture enabled
 - `ErrMsg(msg string) error` — one-shot shortcut for `Message(msg).Err(nil)`
+- `Errorf(format string, args ...any) error` — printf-style one-shot error
+- `Wrapf(err error, format string, args ...any) error` — printf-style one-shot wrap
 - `(*Builder).Code(code) *Builder` — set the error code
 - `(*Builder).Message(msg) *Builder` — set the message
+- `(*Builder).Messagef(format, args...) *Builder` — set a printf-style message
 - `(*Builder).StackTrace() *Builder` — enable stack capture (off by default)
 - `(*Builder).With(key string, value any) *Builder` — add an attribute; re-using a key overwrites its value
-- `(*Builder).Err(cause error) error` — finalize, optionally wrapping a non-aerr cause
+- `(*Builder).Err(cause error) error` — finalize, optionally wrapping a cause
 - `(*Builder).ErrMsg(msg string) error` — finalize with a plain-text cause
 - `(*Builder).Wrap(err error) error` — finalize wrapping another error; returns nil if err is nil
 
-A `*Builder` is not safe for concurrent use and should not be reused after
-`Err` / `ErrMsg` / `Wrap`. The returned `*Error` is immutable and safe to
-share or log from multiple goroutines.
+A `*Builder` is not safe for concurrent use. Finalizing copies its state,
+so a builder may be reused as a template afterwards (from one goroutine).
+The returned `*Error` is immutable and safe to share or log from multiple
+goroutines.
 
 ### Inspecting an error
 
-- `AsAerr(err error) (*Error, bool)` — extract an `*Error` from anywhere in a chain
+- `AsAerr(err error) (*Error, bool)` — extract an `*Error` from anywhere in a chain (including `errors.Join` trees)
+- `HasCode(err error, code string) bool` — check every aerr layer of a chain for a code
 - `(*Error).Error() string` — the combined message
 - `(*Error).Unwrap() error` — the wrapped cause (works with `errors.Is` / `errors.As`)
 - `(*Error).Code() string` — the error code
 - `(*Error).NumAttrs() int` — number of attributes
 - `(*Error).RangeAttrs(func(key string, value any) bool)` — iterate attributes without allocating
 - `(*Error).Attributes() map[string]any` — snapshot attributes as a freshly-allocated map
-- `(*Error).Traces() []string` — render the filtered stack trace
+- `(*Error).Traces() []string` — the filtered stack trace (rendered once, cached)
+- `(*Error).Frames() []Frame` — structured `{File, Line, Function}` frames for exporters (Sentry, OTel, ...)
 - `(*Error).LogValue() slog.Value` — used automatically by `log/slog`
+- `(*Error).MarshalJSON() ([]byte, error)` — `json.Marshal` produces the same structured shape as the log integrations
+- `(*Error).Format(...)` — `%+v` prints message, code, attributes, and stack (pkg/errors convention)
 
 ## Complete Example - Multi-Layer Application
 

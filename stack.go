@@ -99,6 +99,44 @@ func skipFrame(f runtime.Frame) bool {
 	return !strings.Contains(f.Function, "/")
 }
 
+// Frame is one entry of a captured stack trace in structured form, for
+// exporters (Sentry, OpenTelemetry, ...) that need file/line/function
+// separately instead of the rendered strings from Traces.
+type Frame struct {
+	// File is the source file path as reported by the runtime.
+	File string
+	// Line is the 1-based line number within File.
+	Line int
+	// Function is the fully qualified function name
+	// (e.g. "github.com/user/project/pkg.(*Type).Method").
+	Function string
+}
+
+// Frames returns the captured stack as structured frames, applying the
+// same user-code filtering as Traces. It returns nil when no stack was
+// captured. Unlike Traces the result is built on every call, so callers
+// should retain it rather than re-invoke in hot paths.
+func (e *Error) Frames() []Frame {
+	if e == nil || len(e.pcs) == 0 {
+		return nil
+	}
+	frames := runtime.CallersFrames(e.pcs)
+	out := make([]Frame, 0, len(e.pcs))
+	for {
+		f, more := frames.Next()
+		if !skipFrame(f) {
+			out = append(out, Frame{File: f.File, Line: f.Line, Function: f.Function})
+		}
+		if !more {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func appendFrame(buf []byte, f runtime.Frame) []byte {
 	buf = append(buf, f.File...)
 	buf = append(buf, ':')

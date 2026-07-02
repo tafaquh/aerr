@@ -127,6 +127,39 @@ func (e *Error) LogValue() slog.Value {
 	return slog.GroupValue(out...)
 }
 
+// HasCode reports whether any *Error in err's chain carries the given
+// code, walking both Unwrap() error and Unwrap() []error links. Unlike
+// AsAerr followed by Code, it sees codes that outer errors did not
+// inherit: every aerr layer of the chain is checked individually.
+//
+// The empty string never matches: a code of "" is treated as unset, so
+// HasCode(err, "") is always false even when the chain contains *Error
+// values whose code was never set.
+func HasCode(err error, code string) bool {
+	if code == "" {
+		return false
+	}
+	for err != nil {
+		if e, ok := err.(*Error); ok && e != nil && e.code == code {
+			return true
+		}
+		switch x := err.(type) {
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, sub := range x.Unwrap() {
+				if HasCode(sub, code) {
+					return true
+				}
+			}
+			return false
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 // AsAerr extracts an *Error from anywhere in err's chain, walking both
 // Unwrap() error and Unwrap() []error links without reflection. The first
 // return value is non-nil when the second is true; a typed-nil *Error in
