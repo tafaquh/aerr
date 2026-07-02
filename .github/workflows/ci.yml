@@ -42,10 +42,10 @@ jobs:
         go-version: ['1.21.x', 'stable']
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Go ${{ matrix.go-version }}
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -97,10 +97,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: stable
           cache: true
@@ -139,10 +139,10 @@ jobs:
         module: ['.', zerolog, zap]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           # Pinned to match the golangci-lint version below: golangci-lint
           # v2.8.0 is built with Go 1.25, and running it under a newer Go
@@ -154,7 +154,7 @@ jobs:
           cache-dependency-path: ${{ env.GO_SUM_FILES }}
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           # Pinned explicitly: golangci-lint v2 is required to read this
           # repo's v2-schema .golangci.yml, and relying on the action's
@@ -174,10 +174,10 @@ jobs:
         module: ['.', zerolog, zap, benchmarks, examples]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: stable
           cache: true
