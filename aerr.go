@@ -131,7 +131,14 @@ func (e *Error) LogValue() slog.Value {
 // code, walking both Unwrap() error and Unwrap() []error links. Unlike
 // AsAerr followed by Code, it sees codes that outer errors did not
 // inherit: every aerr layer of the chain is checked individually.
+//
+// The empty string never matches: a code of "" is treated as unset, so
+// HasCode(err, "") is always false even when the chain contains *Error
+// values whose code was never set.
 func HasCode(err error, code string) bool {
+	if code == "" {
+		return false
+	}
 	for err != nil {
 		if e, ok := err.(*Error); ok && e != nil && e.code == code {
 			return true

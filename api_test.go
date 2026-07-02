@@ -166,6 +166,78 @@ func TestHasCode(t *testing.T) {
 	}
 }
 
+// badErr is a value-receiver error whose Error() dereferences a nil
+// field. Stored in an error interface its reflect.Kind is Struct, so it
+// slips past nil-interface and pointer-nil guards and panics when Error()
+// is called — the case MarshalJSON must survive.
+type badErr struct{ p *int }
+
+func (b badErr) Error() string { return fmt.Sprintf("v=%d", *b.p) }
+
+// TestMarshalJSONPanickingAttr ensures a panicking error attribute never
+// crashes MarshalJSON: the key stays present with a "<panic: ...>" value
+// and the output is valid JSON.
+func TestMarshalJSONPanickingAttr(t *testing.T) {
+	err := aerr.Code("J").Message("m").With("bad", badErr{}).Err(nil)
+	e, _ := aerr.AsAerr(err)
+
+	var raw []byte
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("MarshalJSON panicked on a panicking error attr: %v", r)
+			}
+		}()
+		var jerr error
+		if raw, jerr = json.Marshal(e); jerr != nil {
+			t.Fatalf("MarshalJSON returned error: %v", jerr)
+		}
+	}()
+
+	if !json.Valid(raw) {
+		t.Fatalf("invalid JSON produced: %s", raw)
+	}
+	var decoded map[string]any
+	if jerr := json.Unmarshal(raw, &decoded); jerr != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", jerr, raw)
+	}
+	attrs, ok := decoded["attributes"].(map[string]any)
+	if !ok {
+		t.Fatalf("attributes missing or wrong shape: %s", raw)
+	}
+	val, present := attrs["bad"]
+	if !present {
+		t.Fatalf("panicking attr key silently omitted: %s", raw)
+	}
+	msg, _ := val.(string)
+	if !strings.Contains(msg, "panic") {
+		t.Errorf("expected panic placeholder in attr value, got %q\n%s", msg, raw)
+	}
+}
+
+// TestHasCodeEmptyCode pins the empty-code semantics: "" is treated as
+// unset and never matches, even against *Error values whose code was
+// never set.
+func TestHasCodeEmptyCode(t *testing.T) {
+	noCode := aerr.Message("no code set").Err(nil)
+	if e, _ := aerr.AsAerr(noCode); e.Code() != "" {
+		t.Fatalf("precondition: expected unset code, got %q", e.Code())
+	}
+	if aerr.HasCode(noCode, "") {
+		t.Error(`HasCode(err, "") must be false: the empty code is treated as unset`)
+	}
+
+	chain := aerr.Message("outer").Wrap(aerr.Message("inner").Err(nil))
+	if aerr.HasCode(chain, "") {
+		t.Error(`HasCode must never match "" anywhere in the chain`)
+	}
+
+	withCode := aerr.Code("SET").ErrMsg("x")
+	if aerr.HasCode(withCode, "") {
+		t.Error(`HasCode(err, "") must be false even when other codes are set`)
+	}
+}
+
 // --- printf constructors ---
 
 func TestPrintfConstructors(t *testing.T) {
