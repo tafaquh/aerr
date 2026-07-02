@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/sirupsen/logrus"
 	"github.com/tafaquh/aerr"
+	aerrzap "github.com/tafaquh/aerr/zap"
 	_ "github.com/tafaquh/aerr/zerolog"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -409,6 +410,116 @@ func BenchmarkAerrZerologErrorChain(b *testing.B) {
 	}
 }
 
+// ==================== Aerr with Zap Benchmarks ====================
+
+// BenchmarkAerrZapSimple tests aerr with zap simple error
+func BenchmarkAerrZapSimple(b *testing.B) {
+	var buf bytes.Buffer
+	encoder := zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
+	core := zapcore.NewCore(encoder, zapcore.AddSync(&buf), zapcore.ErrorLevel)
+	logger := zap.New(core)
+
+	err := aerr.Code("TEST_ERROR").ErrMsg("test error")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		logger.Error("test", aerrzap.Field(err))
+	}
+}
+
+// BenchmarkAerrZapWith10Fields tests aerr with zap and 10 fields
+func BenchmarkAerrZapWith10Fields(b *testing.B) {
+	var buf bytes.Buffer
+	encoder := zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
+	core := zapcore.NewCore(encoder, zapcore.AddSync(&buf), zapcore.ErrorLevel)
+	logger := zap.New(core)
+
+	err := aerr.Code("TEST_ERROR").
+		With("field1", "value1").
+		With("field2", "value2").
+		With("field3", "value3").
+		With("field4", "value4").
+		With("field5", "value5").
+		With("field6", "value6").
+		With("field7", "value7").
+		With("field8", "value8").
+		With("field9", "value9").
+		With("field10", "value10").
+		ErrMsg("test error")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		logger.Error("test", aerrzap.Field(err))
+	}
+}
+
+// BenchmarkAerrZapWith10FieldsAndStack tests aerr with zap, 10 fields and stack
+func BenchmarkAerrZapWith10FieldsAndStack(b *testing.B) {
+	var buf bytes.Buffer
+	encoder := zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
+	core := zapcore.NewCore(encoder, zapcore.AddSync(&buf), zapcore.ErrorLevel)
+	logger := zap.New(core)
+
+	err := aerr.Code("TEST_ERROR").
+		StackTrace().
+		With("field1", "value1").
+		With("field2", "value2").
+		With("field3", "value3").
+		With("field4", "value4").
+		With("field5", "value5").
+		With("field6", "value6").
+		With("field7", "value7").
+		With("field8", "value8").
+		With("field9", "value9").
+		With("field10", "value10").
+		ErrMsg("test error")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		logger.Error("test", aerrzap.Field(err))
+	}
+}
+
+// BenchmarkAerrZapErrorChain tests aerr with zap error chain (3 levels)
+func BenchmarkAerrZapErrorChain(b *testing.B) {
+	var buf bytes.Buffer
+	encoder := zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
+	core := zapcore.NewCore(encoder, zapcore.AddSync(&buf), zapcore.ErrorLevel)
+	logger := zap.New(core)
+
+	err1 := aerr.Code("DB_ERROR").
+		Message("database query failed").
+		StackTrace().
+		With("query", "SELECT * FROM users").
+		With("table", "users").
+		Err(errors.New("connection timeout"))
+
+	err2 := aerr.Code("SERVICE_ERROR").
+		Message("user service failed").
+		With("operation", "GetUser").
+		With("user_id", "12345").
+		Wrap(err1)
+
+	err3 := aerr.Code("CONTROLLER_ERROR").
+		Message("failed to handle user request").
+		With("endpoint", "/api/users/12345").
+		With("method", "GET").
+		Wrap(err2)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		logger.Error("request failed", aerrzap.Field(err3))
+	}
+}
+
 // ==================== Logrus Comparison Benchmarks ====================
 
 // BenchmarkLogrusSimple tests logrus with a simple error message
@@ -468,13 +579,13 @@ func BenchmarkLogrusErrorChain(b *testing.B) {
 
 		buf.Reset()
 		logger.WithFields(logrus.Fields{
-			"error":    err3,
-			"query":    "SELECT * FROM users",
-			"table":    "users",
+			"error":     err3,
+			"query":     "SELECT * FROM users",
+			"table":     "users",
 			"operation": "GetUser",
-			"user_id":  "12345",
-			"endpoint": "/api/users/12345",
-			"method":   "GET",
+			"user_id":   "12345",
+			"endpoint":  "/api/users/12345",
+			"method":    "GET",
 		}).Error("request failed")
 	}
 }
