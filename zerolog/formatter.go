@@ -10,6 +10,8 @@
 package aerrzerolog
 
 import (
+	"time"
+
 	"github.com/rs/zerolog"
 	"github.com/tafaquh/aerr"
 )
@@ -61,12 +63,49 @@ func (m aerrMarshaller) MarshalZerologObject(evt *zerolog.Event) {
 	if m.e.NumAttrs() > 0 {
 		dict := zerolog.Dict()
 		m.e.RangeAttrs(func(k string, v any) bool {
-			dict.Interface(k, v)
+			appendAttr(dict, k, v)
 			return true
 		})
 		evt.Dict("attributes", dict)
 	}
 	if traces := m.e.Traces(); len(traces) > 0 {
 		evt.Strs("stacktrace", traces)
+	}
+}
+
+// appendAttr writes one attribute through zerolog's typed appenders,
+// falling back to Interface (reflection + encoding/json) only for types
+// without a fast path. The typed paths write zero-allocation; Interface
+// costs ~2 allocs per value.
+func appendAttr(dict *zerolog.Event, k string, v any) {
+	switch val := v.(type) {
+	case string:
+		dict.Str(k, val)
+	case int:
+		dict.Int(k, val)
+	case int64:
+		dict.Int64(k, val)
+	case uint64:
+		dict.Uint64(k, val)
+	case bool:
+		dict.Bool(k, val)
+	case float64:
+		dict.Float64(k, val)
+	case float32:
+		dict.Float32(k, val)
+	case time.Time:
+		dict.Time(k, val)
+	case time.Duration:
+		dict.Dur(k, val)
+	case []string:
+		dict.Strs(k, val)
+	case []byte:
+		dict.Bytes(k, val)
+	case error:
+		// AnErr handles typed-nil errors via zerolog's isNilValue and
+		// renders the message instead of Interface's empty "{}".
+		dict.AnErr(k, val)
+	default:
+		dict.Interface(k, val)
 	}
 }
