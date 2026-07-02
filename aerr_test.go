@@ -1,14 +1,44 @@
 package aerr_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"log/slog"
-	"os"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/tafaquh/aerr"
 )
+
+// logJSON captures a single slog JSON log line emitted by fn and returns it
+// parsed, with the non-deterministic "time" field removed so callers can
+// compare canonical structures.
+func logJSON(t *testing.T, fn func(*slog.Logger)) map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
+	fn(logger)
+	var line map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &line); err != nil {
+		t.Fatalf("log line is not valid JSON: %v\n%s", err, buf.String())
+	}
+	delete(line, "time")
+	return line
+}
+
+// errField extracts the structured "err" group object from a parsed line.
+func errField(t *testing.T, line map[string]any) map[string]any {
+	t.Helper()
+	obj, ok := line["err"].(map[string]any)
+	if !ok {
+		t.Fatalf(`log line has no structured "err" object: %v`, line)
+	}
+	return obj
+}
 
 func TestBasicError(t *testing.T) {
 	err := aerr.Message("something went wrong").StackTrace().Err(nil)
@@ -16,7 +46,6 @@ func TestBasicError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-
 	if err.Error() != "something went wrong" {
 		t.Errorf("expected message 'something went wrong', got %q", err.Error())
 	}
@@ -31,9 +60,16 @@ func TestErrorWithCode(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-
 	if err.Error() != "test error occurred" {
 		t.Errorf("expected message 'test error occurred', got %q", err.Error())
+	}
+
+	e, ok := aerr.AsAerr(err)
+	if !ok {
+		t.Fatal("expected *aerr.Error in chain")
+	}
+	if e.Code() != "TEST_ERROR" {
+		t.Errorf("Code() = %q, want %q", e.Code(), "TEST_ERROR")
 	}
 }
 
@@ -44,73 +80,87 @@ func TestWrapError(t *testing.T) {
 	if wrapped == nil {
 		t.Fatal("expected error, got nil")
 	}
-
 	if wrapped.Error() != "wrapped error: original error" {
 		t.Errorf("expected message 'wrapped error: original error', got %q", wrapped.Error())
 	}
 
-	// Check unwrapping
-	unwrapped := errors.Unwrap(wrapped)
-	if unwrapped != original {
+	if unwrapped := errors.Unwrap(wrapped); unwrapped != original {
 		t.Errorf("expected unwrapped error to be original, got %v", unwrapped)
+	}
+	if !errors.Is(wrapped, original) {
+		t.Error("errors.Is must reach the wrapped cause")
 	}
 }
 
 func TestWrapNil(t *testing.T) {
-	err := aerr.Message("this should be nil").Wrap(nil)
-	if err != nil {
+	if err := aerr.Message("this should be nil").Wrap(nil); err != nil {
 		t.Errorf("expected nil when wrapping nil, got %v", err)
 	}
 }
 
 func TestLog(t *testing.T) {
-	// Create a logger that writes to a string builder
-	var buf strings.Builder
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-
-	// Create an error and log it
 	err := aerr.Message("test error").StackTrace().Err(nil)
-	logger.Error("error occurred", slog.Any("err", err))
+	line := logJSON(t, func(l *slog.Logger) {
+		l.Error("error occurred", slog.Any("err", err))
+	})
 
-	output := buf.String()
-
-	// Check that the log contains our error message
-	if !strings.Contains(output, "test error") {
-		t.Errorf("expected log to contain 'test error', got:\n%s", output)
+	if line["level"] != "ERROR" {
+		t.Errorf("level = %v, want ERROR", line["level"])
+	}
+	if line["msg"] != "error occurred" {
+		t.Errorf("msg = %v, want 'error occurred'", line["msg"])
 	}
 
-	// Check that the log contains stack trace
-	if !strings.Contains(output, "stacktrace") {
-		t.Errorf("expected log to contain 'stacktrace', got:\n%s", output)
+	eo := errField(t, line)
+	if eo["message"] != "test error" {
+		t.Errorf("err.message = %v, want 'test error'", eo["message"])
+	}
+	traces, ok := eo["stacktrace"].([]any)
+	if !ok || len(traces) == 0 {
+		t.Fatalf("err.stacktrace missing or empty: %v", eo)
+	}
+	first, _ := traces[0].(string)
+	if !strings.Contains(first, "TestLog") {
+		t.Errorf("first frame = %q, want it to point at this test", first)
 	}
 }
 
 func TestLogWithCause(t *testing.T) {
-	var buf strings.Builder
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-
 	original := errors.New("original error")
 	wrapped := aerr.Message("wrapped error").StackTrace().Wrap(original)
-	logger.Error("error occurred", slog.Any("err", wrapped))
+	line := logJSON(t, func(l *slog.Logger) {
+		l.Error("error occurred", slog.Any("err", wrapped))
+	})
 
-	output := buf.String()
-
-	// Check that wrapped error message is in the log
-	if !strings.Contains(output, "wrapped error") {
-		t.Errorf("expected log to contain 'wrapped error', got:\n%s", output)
+	eo := errField(t, line)
+	if eo["message"] != "wrapped error: original error" {
+		t.Errorf("err.message = %v, want full chain text", eo["message"])
 	}
-	// When wrapping regular errors, the wrapped message includes the original
-	// Note: The original error is accessible via Unwrap() but not in the logged message for non-aerr errors
+	if _, ok := eo["code"]; ok {
+		t.Errorf("err.code must be omitted when unset, got %v", eo["code"])
+	}
+	if _, ok := eo["attributes"]; ok {
+		t.Errorf("err.attributes must be omitted when empty, got %v", eo["attributes"])
+	}
 }
 
 func TestLogNil(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	// Should not panic
-	logger.Error("test", slog.Any("err", nil))
+	// Untyped nil must render as a null err field without panicking.
+	line := logJSON(t, func(l *slog.Logger) {
+		l.Error("test", slog.Any("err", nil))
+	})
+	if v, ok := line["err"]; !ok || v != nil {
+		t.Errorf(`err = %v, want JSON null`, v)
+	}
+
+	// Typed-nil *Error resolves through LogValue's nil guard to null too.
+	var typedNil *aerr.Error
+	line = logJSON(t, func(l *slog.Logger) {
+		l.Error("test", slog.Any("err", typedNil))
+	})
+	if v, ok := line["err"]; !ok || v != nil {
+		t.Errorf(`typed-nil err = %v, want JSON null`, v)
+	}
 }
 
 func TestErrorChain(t *testing.T) {
@@ -118,21 +168,29 @@ func TestErrorChain(t *testing.T) {
 	err2 := aerr.Message("wrapped once").Wrap(err1)
 	err3 := aerr.Message("wrapped twice").Wrap(err2)
 
-	// Test errors.Is
 	if !errors.Is(err3, err1) {
-		t.Error("expected errors.Is to work through chain")
+		t.Error("expected errors.Is to reach the base error through the chain")
+	}
+	if !errors.Is(err3, err2) {
+		t.Error("expected errors.Is to reach the intermediate layer")
+	}
+
+	var ae *aerr.Error
+	if !errors.As(err3, &ae) {
+		t.Fatal("expected errors.As to find an *aerr.Error")
+	}
+	if ae.Error() != "wrapped twice: wrapped once: base error" {
+		t.Errorf("outermost message = %q, want full chain text", ae.Error())
 	}
 }
 
-func TestWrapaErr(t *testing.T) {
-	// Create a aerr error
+func TestWrapAerr(t *testing.T) {
 	err1 := aerr.Code("DB_ERROR").
 		Message("database connection failed").
 		StackTrace().
 		With("host", "localhost").
 		Err(errors.New("connection refused"))
 
-	// Wrap it with another aerr
 	err2 := aerr.Code("APP_ERROR").
 		Message("application startup failed").
 		With("component", "database").
@@ -142,31 +200,32 @@ func TestWrapaErr(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	// When wrapping aerr errors, messages are combined including the cause
 	expectedMsg := "application startup failed: database connection failed: connection refused"
 	if err2.Error() != expectedMsg {
 		t.Errorf("expected message %q, got %q", expectedMsg, err2.Error())
 	}
 
-	// Check that we can unwrap to get the original error
-	unwrapped := errors.Unwrap(err2)
-	if unwrapped != err1 {
+	if unwrapped := errors.Unwrap(err2); unwrapped != err1 {
 		t.Error("expected unwrapped error to be err1")
 	}
-
-	// Check that errors.Is works through the chain
 	if !errors.Is(err2, err1) {
 		t.Error("expected errors.Is to work through aerr chain")
 	}
+
+	e2, ok := aerr.AsAerr(err2)
+	if !ok {
+		t.Fatal("expected *aerr.Error")
+	}
+	if e2.Code() != "APP_ERROR" {
+		t.Errorf("Code() = %q, want APP_ERROR (outer wins)", e2.Code())
+	}
+	wantAttrs := map[string]any{"component": "database", "host": "localhost"}
+	if got := e2.Attributes(); !reflect.DeepEqual(got, wantAttrs) {
+		t.Errorf("Attributes() = %v, want %v", got, wantAttrs)
+	}
 }
 
-func TestLogaErrChain(t *testing.T) {
-	var buf strings.Builder
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-
-	// Create a chain of aerr errors
+func TestLogAerrChain(t *testing.T) {
 	err1 := aerr.Code("DB_ERROR").
 		Message("query failed").
 		With("query", "SELECT * FROM users").
@@ -183,90 +242,90 @@ func TestLogaErrChain(t *testing.T) {
 		With("endpoint", "/api/users").
 		Wrap(err2)
 
-	logger.Error("request failed", slog.Any("err", err3))
+	line := logJSON(t, func(l *slog.Logger) {
+		l.Error("request failed", slog.Any("err", err3))
+	})
 
-	output := buf.String()
-
-	// Check that all aerr error messages are in the combined message
-	if !strings.Contains(output, "API request failed") {
-		t.Errorf("expected log to contain 'API request failed', got:\n%s", output)
+	// The stack was captured at err1's Err call site and inherited upward.
+	eo := errField(t, line)
+	traces, ok := eo["stacktrace"].([]any)
+	if !ok || len(traces) == 0 {
+		t.Fatalf("err.stacktrace missing or empty: %v", eo)
 	}
-	if !strings.Contains(output, "user service failed") {
-		t.Errorf("expected log to contain 'user service failed', got:\n%s", output)
-	}
-	if !strings.Contains(output, "query failed") {
-		t.Errorf("expected log to contain 'query failed', got:\n%s", output)
-	}
-	// Note: The underlying error ("syntax error") is wrapped but not part of the aerr message chain
-
-	// Check that the outermost code is present (new behavior)
-	if !strings.Contains(output, "API_ERROR") {
-		t.Errorf("expected log to contain 'API_ERROR', got:\n%s", output)
-	}
-	// The innermost code should not override the outermost
-	if strings.Contains(output, `"code":"DB_ERROR"`) {
-		t.Errorf("expected log NOT to contain DB_ERROR as the code (should be API_ERROR), got:\n%s", output)
+	if first, _ := traces[0].(string); !strings.Contains(first, "TestLogAerrChain") {
+		t.Errorf("first frame = %q, want the deepest capture site (this test)", first)
 	}
 
-	// Check that context fields are present in attributes
-	if !strings.Contains(output, "attributes") {
-		t.Errorf("expected log to contain 'attributes', got:\n%s", output)
+	// With the non-deterministic stack removed, the rest of the line must
+	// match the canonical structure exactly: full chain message, outermost
+	// code, and all attributes merged under err.attributes.
+	delete(eo, "stacktrace")
+	want := map[string]any{
+		"level": "ERROR",
+		"msg":   "request failed",
+		"err": map[string]any{
+			"message": "API request failed: user service failed: query failed: syntax error",
+			"code":    "API_ERROR",
+			"attributes": map[string]any{
+				"endpoint": "/api/users",
+				"method":   "GetUser",
+				"query":    "SELECT * FROM users",
+			},
+		},
 	}
-	if !strings.Contains(output, "endpoint") {
-		t.Errorf("expected log to contain 'endpoint', got:\n%s", output)
-	}
-	if !strings.Contains(output, "method") {
-		t.Errorf("expected log to contain 'method', got:\n%s", output)
-	}
-	if !strings.Contains(output, "query") {
-		t.Errorf("expected log to contain 'query', got:\n%s", output)
+	if !reflect.DeepEqual(line, want) {
+		t.Errorf("log line = %#v\nwant %#v", line, want)
 	}
 }
 
 func TestWithFields(t *testing.T) {
-	var buf strings.Builder
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-
 	err := aerr.Code("TEST_ERROR").
 		Message("test with fields").
 		With("field1", "value1").
 		With("field2", 123).
 		Err(nil)
 
-	logger.Error("test", slog.Any("err", err))
+	line := logJSON(t, func(l *slog.Logger) {
+		l.Error("test", slog.Any("err", err))
+	})
 
-	output := buf.String()
-
-	if !strings.Contains(output, "field1") {
-		t.Errorf("expected log to contain 'field1', got:\n%s", output)
+	want := map[string]any{
+		"level": "ERROR",
+		"msg":   "test",
+		"err": map[string]any{
+			"message": "test with fields",
+			"code":    "TEST_ERROR",
+			"attributes": map[string]any{
+				"field1": "value1",
+				"field2": float64(123),
+			},
+		},
 	}
-	if !strings.Contains(output, "value1") {
-		t.Errorf("expected log to contain 'value1', got:\n%s", output)
-	}
-	if !strings.Contains(output, "field2") {
-		t.Errorf("expected log to contain 'field2', got:\n%s", output)
+	if !reflect.DeepEqual(line, want) {
+		t.Errorf("log line = %#v\nwant %#v", line, want)
 	}
 }
 
 func TestWithStackTrace(t *testing.T) {
-	var buf strings.Builder
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-
-	// Call StackTrace() to enable stack trace capture
 	err := aerr.Code("TEST_ERROR").
 		Message("test with stack").
 		StackTrace().
 		Err(nil)
 
-	logger.Error("test", slog.Any("err", err))
+	line := logJSON(t, func(l *slog.Logger) {
+		l.Error("test", slog.Any("err", err))
+	})
 
-	output := buf.String()
-
-	if !strings.Contains(output, "stacktrace") {
-		t.Errorf("expected log to contain 'stacktrace', got:\n%s", output)
+	eo := errField(t, line)
+	traces, ok := eo["stacktrace"].([]any)
+	if !ok || len(traces) == 0 {
+		t.Fatalf("err.stacktrace missing or empty: %v", eo)
+	}
+	first, _ := traces[0].(string)
+	if !strings.Contains(first, "TestWithStackTrace") {
+		t.Errorf("first frame = %q, want this test's call site", first)
+	}
+	if !strings.Contains(first, "aerr_test.go") {
+		t.Errorf("first frame = %q, want it to point at aerr_test.go", first)
 	}
 }
