@@ -2,14 +2,21 @@ package aerrzerolog_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
 	"github.com/tafaquh/aerr"
-	_ "github.com/tafaquh/aerr/zerolog"
+	aerrzerolog "github.com/tafaquh/aerr/zerolog"
 )
+
+func TestMain(m *testing.M) {
+	aerrzerolog.Register()
+	os.Exit(m.Run())
+}
 
 func TestZerologIntegration(t *testing.T) {
 	var buf bytes.Buffer
@@ -24,7 +31,6 @@ func TestZerologIntegration(t *testing.T) {
 
 	output := buf.String()
 
-	// Check that the log contains expected fields
 	if !strings.Contains(output, "TEST_ERROR") {
 		t.Errorf("expected log to contain 'TEST_ERROR', got:\n%s", output)
 	}
@@ -86,7 +92,6 @@ func TestZerologErrorChain(t *testing.T) {
 
 	output := buf.String()
 
-	// Check that all error messages are in the combined message
 	if !strings.Contains(output, "API request failed") {
 		t.Errorf("expected log to contain 'API request failed', got:\n%s", output)
 	}
@@ -96,14 +101,15 @@ func TestZerologErrorChain(t *testing.T) {
 	if !strings.Contains(output, "query failed") {
 		t.Errorf("expected log to contain 'query failed', got:\n%s", output)
 	}
-
-	// Check that only the top-level code is present
 	if !strings.Contains(output, "API_ERROR") {
 		t.Errorf("expected log to contain 'API_ERROR', got:\n%s", output)
 	}
 }
 
-func TestZerologStandardAPI(t *testing.T) {
+// TestZerologStackNotDuplicated asserts that the README-recommended
+// .Stack().Err(err) call renders the trace exactly once (inside the error
+// object), not additionally as a top-level "stack" field.
+func TestZerologStackNotDuplicated(t *testing.T) {
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
@@ -113,25 +119,86 @@ func TestZerologStandardAPI(t *testing.T) {
 		With("user_id", "123").
 		Err(nil)
 
-	// Standard zerolog API works!
 	logger.Error().Stack().Err(err).Msg("operation failed")
 
-	output := buf.String()
+	var event map[string]any
+	if jerr := json.Unmarshal(buf.Bytes(), &event); jerr != nil {
+		t.Fatalf("log line is not valid JSON: %v\n%s", jerr, buf.String())
+	}
 
-	// Check that the log contains expected fields
-	if !strings.Contains(output, "TEST_ERROR") {
-		t.Errorf("expected log to contain 'TEST_ERROR', got:\n%s", output)
+	if _, ok := event["stack"]; ok {
+		t.Errorf("stack duplicated as top-level %q field:\n%s", "stack", buf.String())
 	}
-	if !strings.Contains(output, "test with standard API") {
-		t.Errorf("expected log to contain 'test with standard API', got:\n%s", output)
+	errObj, ok := event["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured error object, got:\n%s", buf.String())
 	}
-	if !strings.Contains(output, "user_id") {
-		t.Errorf("expected log to contain 'user_id', got:\n%s", output)
+	traces, ok := errObj["stacktrace"].([]any)
+	if !ok || len(traces) == 0 {
+		t.Errorf("expected stacktrace inside error object, got:\n%s", buf.String())
 	}
-	if !strings.Contains(output, "123") {
-		t.Errorf("expected log to contain '123', got:\n%s", output)
+}
+
+// TestRegisterChainsPreviousMarshaler asserts that a marshal func active
+// before Register keeps handling non-aerr errors.
+func TestRegisterChainsPreviousMarshaler(t *testing.T) {
+	saved := zerolog.ErrorMarshalFunc
+	defer func() { zerolog.ErrorMarshalFunc = saved }()
+
+	zerolog.ErrorMarshalFunc = func(err error) any {
+		return "custom:" + err.Error()
 	}
-	if !strings.Contains(output, "stacktrace") || !strings.Contains(output, "stack") {
-		t.Errorf("expected log to contain 'stacktrace' or 'stack', got:\n%s", output)
+	aerrzerolog.Register()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	// Non-aerr error goes through the previous custom marshaler.
+	logger.Error().Err(errors.New("plain")).Msg("x")
+	if !strings.Contains(buf.String(), "custom:plain") {
+		t.Errorf("previous marshal func not chained for non-aerr error:\n%s", buf.String())
+	}
+
+	// aerr error is rendered structurally.
+	buf.Reset()
+	logger.Error().Err(aerr.Code("C").ErrMsg("boom")).Msg("x")
+	if !strings.Contains(buf.String(), `"code":"C"`) {
+		t.Errorf("aerr error not rendered structurally:\n%s", buf.String())
+	}
+}
+
+// TestObjectHelper renders an error without any global registration.
+func TestObjectHelper(t *testing.T) {
+	saved := zerolog.ErrorMarshalFunc
+	defer func() { zerolog.ErrorMarshalFunc = saved }()
+	// Simulate a process that never called Register.
+	zerolog.ErrorMarshalFunc = func(err error) any { return err }
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	err := aerr.Code("OBJ").Message("via object").With("k", "v").Err(nil)
+	logger.Error().Object("err", aerrzerolog.Object(err)).Msg("x")
+
+	out := buf.String()
+	if !strings.Contains(out, `"code":"OBJ"`) || !strings.Contains(out, `"k":"v"`) {
+		t.Errorf("Object() did not render structured payload:\n%s", out)
+	}
+
+	// Non-aerr errors render their message.
+	buf.Reset()
+	logger.Error().Object("err", aerrzerolog.Object(errors.New("plain"))).Msg("x")
+	if !strings.Contains(buf.String(), "plain") {
+		t.Errorf("Object() lost plain error message:\n%s", buf.String())
+	}
+}
+
+func TestZerologNonAerrDefault(t *testing.T) {
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	logger.Error().Err(errors.New("ordinary failure")).Msg("x")
+	if !strings.Contains(buf.String(), "ordinary failure") {
+		t.Errorf("non-aerr error lost its message:\n%s", buf.String())
 	}
 }

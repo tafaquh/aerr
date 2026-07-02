@@ -356,10 +356,14 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/tafaquh/aerr"
-	_ "github.com/tafaquh/aerr/zerolog" // Import to enable aerr integration
+	aerrzerolog "github.com/tafaquh/aerr/zerolog"
 )
 
 func main() {
+	// Enable aerr integration once, from main (same convention as
+	// zerolog's pkgerrors helper).
+	aerrzerolog.Register()
+
 	// Setup zerolog logger
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
 
@@ -430,10 +434,12 @@ Output with **zerolog** (same simplified structure):
 
 aerr provides optional zerolog integration through a separate package for high-performance logging.
 
-> **Note:** importing `github.com/tafaquh/aerr/zerolog` has a side effect — it
-> overwrites the global `zerolog.ErrorMarshalFunc` and
-> `zerolog.ErrorStackMarshaler`. Non-aerr errors continue to use zerolog's
-> default behavior, but only one marshaler can be active per process.
+> **Note:** `aerrzerolog.Register()` assigns the process-wide
+> `zerolog.ErrorMarshalFunc` (chaining to whatever marshaler was active
+> before it, so non-aerr errors keep their previous rendering). Call it
+> once from `main`. If you prefer zero global configuration, render
+> individual errors with
+> `logger.Error().Object("err", aerrzerolog.Object(err))` instead.
 
 ### Installation
 
@@ -447,10 +453,12 @@ go get github.com/tafaquh/aerr/zerolog
 import (
     "github.com/rs/zerolog"
     "github.com/tafaquh/aerr"
-    _ "github.com/tafaquh/aerr/zerolog" // Import to enable aerr integration
+    aerrzerolog "github.com/tafaquh/aerr/zerolog"
 )
 
 func main() {
+    aerrzerolog.Register()
+
     logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
 
     err := aerr.Code("DB_ERROR").

@@ -1,0 +1,18 @@
+// Workspace for local development and CI: builds the adapter, benchmark,
+// and example modules against the checked-out aerr instead of published
+// versions. Consumers fetching the modules via `go get` are unaffected
+// (go.work applies only to builds run inside this directory).
+//
+// Release checklist: the zerolog module's go.mod must require a published
+// github.com/tafaquh/aerr version that contains every aerr API it uses —
+// CI verifies this with a GOWORK=off consumer smoke test.
+// 1.24.7 only because the zerolog module is temporarily pinned there by
+// the published aerr v1.0.0; drop to 1.21 together with zerolog/go.mod.
+go 1.24.7
+
+use (
+	.
+	./benchmarks
+	./examples
+	./zerolog
+)
