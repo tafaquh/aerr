@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-02
+
 ### Added
 
 - `Frames() []Frame` returns the captured stack as structured
@@ -87,4 +89,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON paths.
 - CI, linting, and dependabot configuration added.
 
-[Unreleased]: https://github.com/tafaquh/aerr/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/tafaquh/aerr/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/tafaquh/aerr/compare/v1.0.0...v1.1.0
