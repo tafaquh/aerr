@@ -68,7 +68,10 @@ func errMessage(err error) (msg string) {
 func Register() {
 	prev := zerolog.ErrorMarshalFunc
 	zerolog.ErrorMarshalFunc = func(err error) any {
-		if e, ok := aerr.AsAerr(err); ok {
+		// The e != nil guards tolerate aerr v1.0.0, whose AsAerr returns
+		// (nil, true) for a typed-nil *aerr.Error; falling through renders the
+		// value safely instead of as an empty object.
+		if e, ok := aerr.AsAerr(err); ok && e != nil {
 			return aerrMarshaller{e: e}
 		}
 		if prev != nil {
@@ -86,7 +89,7 @@ func Register() {
 // When err carries no *aerr.Error the object contains only the error
 // message.
 func Object(err error) zerolog.LogObjectMarshaler {
-	if e, ok := aerr.AsAerr(err); ok {
+	if e, ok := aerr.AsAerr(err); ok && e != nil {
 		return aerrMarshaller{e: e}
 	}
 	return plainMarshaller{err: err}
@@ -98,7 +101,7 @@ func Object(err error) zerolog.LogObjectMarshaler {
 // own zerolog.ErrorMarshalFunc; most applications should call Register
 // instead.
 func AerrMarshalFunc(err error) any {
-	if e, ok := aerr.AsAerr(err); ok {
+	if e, ok := aerr.AsAerr(err); ok && e != nil {
 		return aerrMarshaller{e: e}
 	}
 	return err
@@ -112,7 +115,7 @@ func AerrMarshalFunc(err error) any {
 // rendered inside the error object, so installing AerrStackMarshaler and
 // calling .Stack() duplicates the trace in every log line.
 func AerrStackMarshaler(err error) any {
-	if e, ok := aerr.AsAerr(err); ok {
+	if e, ok := aerr.AsAerr(err); ok && e != nil {
 		if stack := e.Traces(); len(stack) > 0 {
 			return stack
 		}
