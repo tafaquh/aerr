@@ -1,6 +1,9 @@
 package aerr
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Builder fluently configures an *Error. Each setter mutates the receiver
 // and returns it so calls can be chained. Finalizing (Err / ErrMsg / Wrap)
@@ -37,10 +40,30 @@ func StackTrace() *Builder {
 	return &Builder{captureStack: true}
 }
 
+// Messagef begins a new chain with a printf-style message.
+func Messagef(format string, args ...any) *Builder {
+	return &Builder{msg: fmt.Sprintf(format, args...)}
+}
+
 // ErrMsg is a shortcut for Message(msg).Err(nil) that skips Builder
 // allocation entirely.
 func ErrMsg(msg string) error {
 	return &Error{msg: msg}
+}
+
+// Errorf is a printf-style shortcut for Messagef(...).Err(nil).
+func Errorf(format string, args ...any) error {
+	return &Error{msg: fmt.Sprintf(format, args...)}
+}
+
+// Wrapf wraps err with a printf-style message, following the same merge
+// rules as (*Builder).Wrap. Returns nil when err is nil.
+func Wrapf(err error, format string, args ...any) error {
+	if err == nil {
+		return nil
+	}
+	b := Builder{msg: fmt.Sprintf(format, args...)}
+	return b.finalize(err, finalizeSkip)
 }
 
 // Code sets the error code.
@@ -52,6 +75,12 @@ func (b *Builder) Code(code string) *Builder {
 // Message sets the message.
 func (b *Builder) Message(msg string) *Builder {
 	b.msg = msg
+	return b
+}
+
+// Messagef sets a printf-style message.
+func (b *Builder) Messagef(format string, args ...any) *Builder {
+	b.msg = fmt.Sprintf(format, args...)
 	return b
 }
 
