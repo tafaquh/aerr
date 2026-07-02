@@ -29,7 +29,7 @@ func TestTracesCachedAndStable(t *testing.T) {
 	}
 }
 
-func TestConcurrentLoggingOfSharedError(t *testing.T) {
+func TestConcurrentLoggingOfSharedError(_ *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	err := aerr.Code("SHARED").
 		Message("shared error").
