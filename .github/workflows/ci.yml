@@ -144,7 +144,12 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: stable
+          # Pinned to match the golangci-lint version below: golangci-lint
+          # v2.8.0 is built with Go 1.25, and running it under a newer Go
+          # (setup-go's `stable` is already 1.26) makes it panic on real
+          # runs. Bump this together with the golangci-lint `version` pin.
+          # Only the lint job is pinned; test/consumer-smoke stay on stable.
+          go-version: '1.25.x'
           cache: true
           cache-dependency-path: ${{ env.GO_SUM_FILES }}
 
