@@ -19,11 +19,38 @@
 package aerrzerolog
 
 import (
+	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/tafaquh/aerr"
 )
+
+// errMessage returns err's message, tolerating typed-nil errors and
+// Error implementations that panic; a logging path must never crash
+// the process it is observing. A value-receiver error whose Error()
+// dereferences a nil field has reflect.Kind Struct, so it slips past
+// both nil-interface and pointer-nil guards; the recover below is what
+// actually protects against it.
+func errMessage(err error) (msg string) {
+	if err == nil {
+		return "<nil>"
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			msg = fmt.Sprintf("<panic: %v>", r)
+		}
+	}()
+	rv := reflect.ValueOf(err)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		if rv.IsNil() {
+			return "<nil>"
+		}
+	}
+	return err.Error()
+}
 
 // Register installs aerr rendering into zerolog's process-wide
 // ErrorMarshalFunc. Errors that do not carry an *aerr.Error anywhere in
@@ -129,11 +156,15 @@ type plainMarshaller struct {
 }
 
 // MarshalZerologObject implements zerolog.LogObjectMarshaler.
+//
+// A genuinely-nil error yields an empty object (documented). For any
+// non-nil error the message is rendered through errMessage, so a
+// typed-nil or panicking Error implementation cannot crash the logger.
 func (m plainMarshaller) MarshalZerologObject(evt *zerolog.Event) {
 	if m.err == nil {
 		return
 	}
-	evt.Str("message", m.err.Error())
+	evt.Str("message", errMessage(m.err))
 }
 
 // appendAttr writes one attribute through zerolog's typed appenders,
@@ -165,9 +196,12 @@ func appendAttr(dict *zerolog.Event, k string, v any) {
 	case []byte:
 		dict.Bytes(k, val)
 	case error:
-		// AnErr handles typed-nil errors via zerolog's isNilValue and
-		// renders the message instead of Interface's empty "{}".
-		dict.AnErr(k, val)
+		// zerolog's AnErr omits the key entirely for nil-ish values and
+		// calls Error() without recovering, so a typed-nil or panicking
+		// error would either vanish from the log or crash the process.
+		// Render the message through errMessage instead: the key is
+		// always present, with "<nil>"/"<panic: ...>" for those cases.
+		dict.Str(k, errMessage(val))
 	default:
 		dict.Interface(k, val)
 	}
