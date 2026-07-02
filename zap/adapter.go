@@ -33,7 +33,10 @@ func Field(err error) zap.Field {
 	if err == nil {
 		return zap.Skip()
 	}
-	if e, ok := aerr.AsAerr(err); ok {
+	// The e != nil guard tolerates aerr v1.0.0, whose AsAerr returns
+	// (nil, true) for a typed-nil *aerr.Error; falling through renders the
+	// value safely instead of as an empty object.
+	if e, ok := aerr.AsAerr(err); ok && e != nil {
 		return zap.Object("error", aerrMarshaler{e: e})
 	}
 	return zap.Error(err)
@@ -48,7 +51,7 @@ func Field(err error) zap.Field {
 // When err carries no *aerr.Error the object contains only the error
 // message.
 func Object(err error) zapcore.ObjectMarshaler {
-	if e, ok := aerr.AsAerr(err); ok {
+	if e, ok := aerr.AsAerr(err); ok && e != nil {
 		return aerrMarshaler{e: e}
 	}
 	return plainMarshaler{err: err}
