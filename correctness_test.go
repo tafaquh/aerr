@@ -53,12 +53,12 @@ func TestAsAerrTypedNil(t *testing.T) {
 }
 
 func TestAsAerrContract(t *testing.T) {
-	real := aerr.Code("X").ErrMsg("boom")
+	direct := aerr.Code("X").ErrMsg("boom")
 
-	if e, ok := aerr.AsAerr(real); !ok || e == nil {
+	if e, ok := aerr.AsAerr(direct); !ok || e == nil {
 		t.Fatalf("AsAerr(direct) = (%v, %v), want match", e, ok)
 	}
-	wrapped := fmt.Errorf("mid: %w", real)
+	wrapped := fmt.Errorf("mid: %w", direct)
 	if e, ok := aerr.AsAerr(wrapped); !ok || e == nil || e.Code() != "X" {
 		t.Fatalf("AsAerr(wrapped) = (%v, %v), want the inner *Error", e, ok)
 	}
@@ -171,7 +171,7 @@ func TestNoInternalFramesWrap(t *testing.T) {
 
 func TestStdlibFramesFiltered(t *testing.T) {
 	var captured error
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		captured = aerr.Code("H").Message("handler failed").StackTrace().Err(nil)
 	})
 	srv := httptest.NewServer(h)

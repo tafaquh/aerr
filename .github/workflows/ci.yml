@@ -1,0 +1,208 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'assets/**'
+
+# One run per ref at a time; a new push/PR update cancels the stale run
+# instead of letting both burn free-plan minutes to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default token to read-only; no job here needs to write anything.
+permissions:
+  contents: read
+
+env:
+  # Shared by every setup-go step so the build/test cache is keyed
+  # consistently across jobs, even for legs that only touch some modules.
+  GO_SUM_FILES: |
+    zerolog/go.sum
+    zap/go.sum
+    benchmarks/go.sum
+    examples/go.sum
+
+jobs:
+  test:
+    name: test (go ${{ matrix.go-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # Root is the only module still on the go 1.21 floor, so it's the
+        # only one exercised there. The adapter/benchmark/example modules
+        # are pinned to >=1.24.7 by the published aerr v1.0.0 dependency
+        # (see go.work's comment) and only need one Go version.
+        go-version: ['1.21.x', 'stable']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+          cache-dependency-path: ${{ env.GO_SUM_FILES }}
+
+      # GOWORK=off is deliberate: go.work declares `go 1.24.7` (needed by
+      # the adapter modules below). If the workspace were active here,
+      # Go's automatic toolchain switching (GOTOOLCHAIN=auto, the
+      # default) would silently download and re-exec a newer toolchain
+      # on the 1.21.x leg to satisfy that directive, so this step would
+      # never actually run on Go 1.21 despite the matrix label. Root has
+      # no intra-repo dependencies, so it doesn't need the workspace.
+      - name: Test root module
+        env:
+          GOWORK: 'off'
+        run: go test -race -vet=all ./...
+
+      # These use the default go.work resolution (GOWORK left on) so
+      # they build against the checked-out aerr/zerolog/zap sources
+      # instead of requiring a published release for local iteration.
+      # They only need to run once, so they're gated to the stable leg.
+      - name: Test zerolog adapter
+        if: matrix.go-version == 'stable'
+        working-directory: zerolog
+        run: go test -race -vet=all ./...
+
+      - name: Test zap adapter
+        if: matrix.go-version == 'stable'
+        working-directory: zap
+        run: go test -race -vet=all ./...
+
+      # -run=NONE -benchtime=1x: this is a compile + single-iteration
+      # smoke test for the benchmark suite, not a performance run. CI
+      # runners are noisy shared hardware, so benchmark numbers here
+      # would not be trustworthy anyway.
+      - name: Benchmarks compile + smoke
+        if: matrix.go-version == 'stable'
+        working-directory: benchmarks
+        run: go test -run=NONE -bench=. -benchtime=1x ./...
+
+      - name: Build examples
+        if: matrix.go-version == 'stable'
+        working-directory: examples
+        run: go build ./...
+
+  consumer-smoke:
+    name: consumer smoke (published aerr)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+          cache-dependency-path: ${{ env.GO_SUM_FILES }}
+
+      # The whole point of this job: prove the adapters' go.mod `require
+      # github.com/tafaquh/aerr vX.Y.Z` lines are honest by building
+      # against the PUBLISHED module from the proxy (GOWORK=off, no
+      # replace directive in either go.mod), not the local workspace
+      # checkout. The previous zerolog v1.0.0 release shipped broken
+      # because nothing verified this — see zerolog/go.mod's
+      # `retract v1.0.0` and its explanation.
+      - name: zerolog against published aerr
+        working-directory: zerolog
+        env:
+          GOWORK: 'off'
+        run: |
+          go build ./...
+          go test ./...
+
+      - name: zap against published aerr
+        working-directory: zap
+        env:
+          GOWORK: 'off'
+        run: |
+          go build ./...
+          go test ./...
+
+  lint:
+    name: lint (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ['.', zerolog, zap]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # Pinned to match the golangci-lint version below: golangci-lint
+          # v2.8.0 is built with Go 1.25, and running it under a newer Go
+          # (setup-go's `stable` is already 1.26) makes it panic on real
+          # runs. Bump this together with the golangci-lint `version` pin.
+          # Only the lint job is pinned; test/consumer-smoke stay on stable.
+          go-version: '1.25.x'
+          cache: true
+          cache-dependency-path: ${{ env.GO_SUM_FILES }}
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          # Pinned explicitly: golangci-lint v2 is required to read this
+          # repo's v2-schema .golangci.yml, and relying on the action's
+          # own default resolution would make that an implicit, movable
+          # dependency instead of a deterministic one.
+          version: v2.8.0
+          working-directory: ${{ matrix.module }}
+          args: --timeout=5m
+
+  fmt-vet-tidy:
+    name: "fmt+vet+mod-tidy check (${{ matrix.module }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ['.', zerolog, zap, benchmarks, examples]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+          cache-dependency-path: ${{ env.GO_SUM_FILES }}
+
+      # gofmt has no notion of modules; run the repo-wide check once, on
+      # the root leg, instead of once per module.
+      - name: gofmt
+        if: matrix.module == '.'
+        run: |
+          fmt_out="$(gofmt -l .)"
+          if [ -n "$fmt_out" ]; then
+            echo "::error::gofmt would reformat these files:"
+            echo "$fmt_out"
+            exit 1
+          fi
+
+      # Cheap, fast-fail signal ahead of the heavier -race test job.
+      - name: go vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+      # -diff (go 1.23+) fails instead of rewriting go.mod/go.sum, so a
+      # forgotten `go mod tidy` after a dependency change is caught here
+      # rather than as drift discovered later.
+      - name: go mod tidy -diff
+        working-directory: ${{ matrix.module }}
+        run: go mod tidy -diff

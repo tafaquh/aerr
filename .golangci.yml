@@ -1,0 +1,59 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - revive
+    - misspell
+    - unparam
+    - gosec
+  settings:
+    gosec:
+      excludes:
+        # File path comes from internal call sites only (stack frame
+        # rendering), never from unvalidated external input.
+        - G304
+  exclusions:
+    rules:
+      # format.go implements fmt.Formatter/error-string writers. Per Go
+      # convention (see the stdlib fmt and errors packages), Format/Write
+      # helpers that serialize to the destination the caller already
+      # supplied do not propagate write errors: there is no error-return
+      # channel on Format(fmt.State, rune), and callers of fmt.Sprintf /
+      # %v / %+v already accept that formatting errors are unreportable.
+      # Checking these would add ceremony without a way to act on failure.
+      # errcheck and gosec (G104) both flag the same unchecked-write
+      # pattern, so both are excluded here.
+      - path: format\.go
+        linters:
+          - errcheck
+          - gosec
+      # finalize's `skip` parameter is intentionally explicit even though
+      # every current call site passes finalizeSkip: it documents exactly
+      # how many stack frames separate runtime.Callers from the user call
+      # site (see the finalizeSkip doc comment) and gives the single
+      # capture-stack path one obvious place to change if a new finalizer
+      # is ever added at a different call depth. Hardcoding it inline
+      # would silently break the next finalizer added above finalize.
+      - path: builder\.go
+        linters:
+          - unparam
+        text: "skip always receives"
+      # Test files: unused method-under-test verification and table-driven
+      # tests occasionally require gosec/errcheck-relevant patterns (e.g.
+      # deliberately malformed input) that are not production risk.
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -1,1 +1,15 @@
 .vscode/
+
+# Go build artifacts. go.work is intentionally committed (local dev /
+# CI workspace); only compiled binaries and coverage output are ignored.
+/bin/
+*.exe
+*.test
+*.out
+*.prof
+# `go build ./...` in examples/ (package main) emits a binary named after
+# the directory when no -o is given.
+/examples/examples
+
+# OS cruft
+.DS_Store
