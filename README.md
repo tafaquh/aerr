@@ -7,6 +7,15 @@
 
 </div>
 
+<div align="center">
+
+[![CI](https://github.com/tafaquh/aerr/actions/workflows/ci.yml/badge.svg)](https://github.com/tafaquh/aerr/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/tafaquh/aerr.svg)](https://pkg.go.dev/github.com/tafaquh/aerr)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tafaquh/aerr)](https://goreportcard.com/report/github.com/tafaquh/aerr)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/tafaquh/aerr/blob/main/LICENSE)
+
+</div>
+
 ---
 
 ## Philosophy
