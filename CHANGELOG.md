@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-07-02
+## [1.1.0] - 2026-07-05
 
 ### Added
 
@@ -64,6 +64,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which required a parent-module pre-release API that no longer existed and
   was hidden behind a `replace` directive consumers do not inherit — is
   retracted.
+- `MarshalJSON` no longer panics on an attribute whose `json.Marshaler`
+  implementation panics; such values degrade to a `"<panic: ...>"`
+  placeholder, matching the guard already applied to panicking `Error()`
+  values and both logging adapters.
+- Stack-trace frame filtering stays correct under `-trimpath` builds:
+  standard-library frames from multi-segment packages (`net/http`,
+  `encoding/json`, …) are no longer leaked into rendered traces when the
+  stdlib source anchor cannot be resolved.
+- The zap adapter degrades an unencodable attribute value (a channel or
+  func the JSON encoder rejects) to its `fmt` form instead of aborting the
+  log object, so the remaining attributes and the stacktrace still render.
+- Corrected the `aerr` package doc comment, which wrongly attributed the
+  zerolog integration to `slog.LogValuer` and omitted the zap adapter;
+  `doc.go` is now the single canonical package comment.
 
 ### Performance
 
