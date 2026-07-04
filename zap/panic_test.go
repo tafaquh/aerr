@@ -84,20 +84,45 @@ func TestFieldBadErrNoPanic(t *testing.T) {
 	decodeLine(t, buf)
 }
 
-// TestAddReflectedFailurePropagates ensures a value the JSON encoder
-// cannot reflect (a channel) does not silently vanish: addAttr propagates
-// AddReflected's error up through MarshalLogObject so zap emits its
-// standard "<key>Error" indicator ("errorError" for the top-level "error"
-// key) rather than dropping the attribute without a trace.
-func TestAddReflectedFailurePropagates(t *testing.T) {
+// TestUnmarshalableAttrDegrades ensures a value the JSON encoder cannot
+// reflect (a channel) degrades to its fmt form instead of aborting the
+// whole object. Propagating AddReflected's error would end
+// MarshalLogObject early, dropping every later attribute and the
+// stacktrace; degrading keeps them, matching the core JSON and zerolog
+// renderers.
+func TestUnmarshalableAttrDegrades(t *testing.T) {
 	logger, buf := newJSONLogger()
 
 	ch := make(chan int)
-	err := aerr.Code("C").Message("m").With("ch", ch).Err(nil)
+	err := aerr.Code("C").Message("m").StackTrace().
+		With("before", "1").
+		With("ch", ch).
+		With("after", "2").
+		Err(nil)
 	logger.Error("x", aerrzap.Field(err))
 
 	line := decodeLine(t, buf)
-	if _, ok := line["errorError"]; !ok {
-		t.Errorf("expected zap error indicator field %q, got:\n%s", "errorError", buf.String())
+	if _, ok := line["errorError"]; ok {
+		t.Errorf("unmarshalable attr should degrade, not surface as errorError:\n%s", buf.String())
+	}
+	errObj, ok := line["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested error object, got:\n%s", buf.String())
+	}
+	attrs, ok := errObj["attributes"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected attributes object, got:\n%s", buf.String())
+	}
+	if attrs["before"] != "1" {
+		t.Errorf("attr before the failing value dropped: %v", attrs["before"])
+	}
+	if _, present := attrs["ch"]; !present {
+		t.Errorf("degraded chan attr key missing:\n%s", buf.String())
+	}
+	if attrs["after"] != "2" {
+		t.Errorf("attr after the failing value dropped (object aborted early): %v", attrs["after"])
+	}
+	if _, ok := errObj["stacktrace"].([]any); !ok {
+		t.Errorf("stacktrace dropped when an attribute failed to encode:\n%s", buf.String())
 	}
 }
