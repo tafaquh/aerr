@@ -215,6 +215,57 @@ func TestMarshalJSONPanickingAttr(t *testing.T) {
 	}
 }
 
+// panicMarshaler implements json.Marshaler with a MarshalJSON that
+// panics, and deliberately has no Error method. attrJSON therefore cannot
+// route it through the recover-guarded error branch — it reaches
+// json.Marshal(v) directly, the path MarshalJSON must still survive.
+type panicMarshaler struct{}
+
+func (panicMarshaler) MarshalJSON() ([]byte, error) { panic("boom in MarshalJSON") }
+
+// TestMarshalJSONPanickingJSONMarshalerAttr pins the json.Marshaler panic
+// path (distinct from TestMarshalJSONPanickingAttr's panicking Error): a
+// value whose MarshalJSON panics must degrade to a "<panic: ...>"
+// placeholder, keeping the key present and the output valid JSON, instead
+// of crashing the caller.
+func TestMarshalJSONPanickingJSONMarshalerAttr(t *testing.T) {
+	err := aerr.Code("J").Message("m").With("bad", panicMarshaler{}).Err(nil)
+	e, _ := aerr.AsAerr(err)
+
+	var raw []byte
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("MarshalJSON panicked on a panicking json.Marshaler attr: %v", r)
+			}
+		}()
+		var jerr error
+		if raw, jerr = json.Marshal(e); jerr != nil {
+			t.Fatalf("MarshalJSON returned error: %v", jerr)
+		}
+	}()
+
+	if !json.Valid(raw) {
+		t.Fatalf("invalid JSON produced: %s", raw)
+	}
+	var decoded map[string]any
+	if jerr := json.Unmarshal(raw, &decoded); jerr != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", jerr, raw)
+	}
+	attrs, ok := decoded["attributes"].(map[string]any)
+	if !ok {
+		t.Fatalf("attributes missing or wrong shape: %s", raw)
+	}
+	val, present := attrs["bad"]
+	if !present {
+		t.Fatalf("panicking attr key silently omitted: %s", raw)
+	}
+	msg, _ := val.(string)
+	if !strings.Contains(msg, "panic") {
+		t.Errorf("expected panic placeholder in attr value, got %q\n%s", msg, raw)
+	}
+}
+
 // TestHasCodeEmptyCode pins the empty-code semantics: "" is treated as
 // unset and never matches, even against *Error values whose code was
 // never set.

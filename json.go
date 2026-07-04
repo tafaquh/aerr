@@ -17,9 +17,10 @@ import (
 // renders durations in its configured DurationFieldUnit (milliseconds)
 // and []byte raw. Empty fields are omitted. Attribute values marshal with
 // encoding/json; values implementing error (but not json.Marshaler)
-// marshal as their message string (or "<panic: ...>" if that call
-// panics), and unmarshalable values degrade to their fmt representation
-// instead of failing the whole error.
+// marshal as their message string, unmarshalable values degrade to their
+// fmt representation, and any value whose MarshalJSON, String, or Error
+// panics degrades to a "<panic: ...>" placeholder — MarshalJSON never
+// fails and never panics on an attribute value.
 func (e *Error) MarshalJSON() ([]byte, error) {
 	if e == nil {
 		return []byte("null"), nil
@@ -73,8 +74,10 @@ func appendJSONField(buf []byte, key, val string) []byte {
 }
 
 // attrJSON marshals one attribute value, never failing and never
-// panicking: error values render as their message, and values
-// encoding/json rejects fall back to their fmt representation.
+// panicking: error values render as their message, values encoding/json
+// rejects fall back to their fmt representation, and a value whose
+// MarshalJSON (or String/Error) panics degrades to a "<panic: ...>"
+// placeholder.
 func attrJSON(v any) []byte {
 	if _, ok := v.(json.Marshaler); !ok {
 		if er, ok := v.(error); ok {
@@ -88,6 +91,21 @@ func attrJSON(v any) []byte {
 			}
 		}
 	}
+	return marshalValue(v)
+}
+
+// marshalValue encodes v with encoding/json, degrading a value json
+// rejects to its fmt.Sprint form and, failing that, to "<unmarshalable>".
+// A value whose MarshalJSON panics — or whose String/Error panics on the
+// fmt fallback — is recovered and rendered as "<panic: ...>", so attrJSON
+// upholds its no-panic contract for arbitrary json.Marshaler values
+// (encoding/json does not recover panics from a value's own MarshalJSON).
+func marshalValue(v any) (out []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			out, _ = json.Marshal(fmt.Sprintf("<panic: %v>", r))
+		}
+	}()
 	out, err := json.Marshal(v)
 	if err != nil {
 		out, err = json.Marshal(fmt.Sprint(v))
