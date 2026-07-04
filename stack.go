@@ -19,9 +19,14 @@ const selfPkgPrefix = "github.com/tafaquh/aerr."
 // reported by this binary's runtime, derived once from the location of a
 // known stdlib function. Frames whose file lives under it are stdlib
 // (runtime.*, testing.*, net/http, encoding/json, ...) and are filtered
-// from rendered traces. Comparing file paths self-consistently against
-// what the runtime reports keeps the check correct under -trimpath and
-// avoids the deprecated runtime.GOROOT.
+// from rendered traces. Deriving the root from what the runtime itself
+// reports avoids the deprecated runtime.GOROOT and works wherever Go is
+// installed.
+//
+// Under -trimpath the runtime reports stdlib files by their relative path
+// (e.g. "strings/strings.go"), so this anchor cannot be resolved and the
+// result is ""; skipFrame then classifies frames by function name instead
+// (see isStdlibFunc).
 var stdlibDir = func() string {
 	pc := reflect.ValueOf(strings.Contains).Pointer()
 	fn := runtime.FuncForPC(pc)
@@ -91,12 +96,37 @@ func skipFrame(f runtime.Frame) bool {
 	if stdlibDir != "" {
 		return strings.HasPrefix(f.File, stdlibDir)
 	}
-	// Fallback when the stdlib anchor could not be resolved: function
-	// names without a module path slash are stdlib, except package main.
+	// Fallback when the stdlib anchor could not be resolved (a -trimpath
+	// build reports relative stdlib paths, so stdlibDir is ""). Classify
+	// by function name instead: package main is always user code, and a
+	// stdlib import path's first segment carries no dot.
 	if strings.HasPrefix(f.Function, "main.") {
 		return false
 	}
-	return !strings.Contains(f.Function, "/")
+	return isStdlibFunc(f.Function)
+}
+
+// isStdlibFunc classifies a frame by its fully qualified function name,
+// used only when stdlibDir could not be resolved (see stdlibDir). A
+// function name has the form "<import-path>.<func>", where the import
+// path may contain slashes and the func part may contain dots (methods
+// read "(*Type).Method"). The first path segment is the text up to the
+// first '/', or up to the first '.' when there is no slash. A stdlib
+// import path's first segment carries no dot ("runtime", "net", "encoding"
+// for net/http and encoding/json), whereas a module path opens with a
+// domain segment like "github.com".
+//
+// This name heuristic cannot tell a locally-developed module whose path
+// is a single dotless word (e.g. `module myapp`) from stdlib, so such a
+// module's frames are mis-dropped under -trimpath; give the module a
+// dotted or multi-segment path to keep them. package main is handled by
+// the caller and never reaches here.
+func isStdlibFunc(fn string) bool {
+	seg, _, hasSlash := strings.Cut(fn, "/")
+	if !hasSlash {
+		seg, _, _ = strings.Cut(fn, ".")
+	}
+	return !strings.Contains(seg, ".")
 }
 
 // Frame is one entry of a captured stack trace in structured form, for
