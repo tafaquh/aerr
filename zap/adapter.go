@@ -123,10 +123,12 @@ func (m plainMarshaler) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 
 // addAttr writes one attribute through zapcore's typed appenders, falling
 // back to AddReflected (reflection + encoding/json) only for types
-// without a fast path. It returns any encoding error so the caller can
-// surface it instead of silently dropping the field: an AddReflected
-// failure (e.g. a channel the JSON encoder cannot marshal) would
-// otherwise leave the attribute out of the log line with no trace.
+// without a fast path. A value AddReflected cannot encode (e.g. a channel
+// or func the JSON encoder rejects) degrades to its fmt form via AddString
+// rather than propagating the error: returning an error here aborts the
+// whole MarshalLogObject, dropping every later attribute AND the
+// stacktrace, not just the offending value. Degrading matches the core
+// JSON and zerolog renderers, which keep going past an unencodable value.
 func addAttr(enc zapcore.ObjectEncoder, k string, v any) error {
 	switch val := v.(type) {
 	case string:
@@ -154,7 +156,12 @@ func addAttr(enc zapcore.ObjectEncoder, k string, v any) error {
 	case error:
 		enc.AddString(k, errMessage(val))
 	default:
-		return enc.AddReflected(k, val)
+		if err := enc.AddReflected(k, val); err != nil {
+			// AddReflected fails (writing nothing) for values the JSON
+			// encoder cannot handle. Degrade to the fmt form and keep going
+			// so the remaining attributes and the stacktrace still render.
+			enc.AddString(k, fmt.Sprint(val))
+		}
 	}
 	return nil
 }
