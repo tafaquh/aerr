@@ -61,8 +61,21 @@ func TestSkipFrameFallback(t *testing.T) {
 		{"empty symbol", "", true},
 		{"aerr internal", selfPkgPrefix + "finalize", true},
 		{"package main is user code", "main.run", false},
-		{"slashless is stdlib", "strings.Contains", true},
+		{"slashless stdlib", "strings.Contains", true},
+		// Multi-segment stdlib packages carry a slash in their function
+		// names; the fallback must still classify them as stdlib. This is
+		// the case the pre-fix `!strings.Contains(fn, "/")` heuristic got
+		// wrong, leaking net/http and encoding/json frames under -trimpath.
+		{"multi-segment stdlib (net/http)", "net/http.(*conn).serve", true},
+		{"multi-segment stdlib (encoding/json)", "encoding/json.Marshal", true},
+		{"multi-segment stdlib (database/sql)", "database/sql.(*DB).Query", true},
 		{"module path is user code", "github.com/user/project.Handle", false},
+		{"deep module path is user code", "github.com/user/project/svc.(*S).Do", false},
+		{"dotted-domain module is user code", "gopkg.in/yaml.v3.Unmarshal", false},
+		// Documented limitation: a dotless local module path (e.g.
+		// `module myapp`) is indistinguishable from stdlib by name alone,
+		// so its frames are mis-dropped on a -trimpath build.
+		{"slashless local module mis-dropped", "myapp.LoadConfig", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
