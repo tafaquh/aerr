@@ -1,8 +1,3 @@
-// Package aerr provides structured errors that carry an error code, a
-// message, arbitrary key/value attributes, and an optional stack trace.
-// Errors are built with a fluent *Builder API and implement slog.LogValuer
-// so they integrate directly with log/slog and the optional zerolog
-// adapter in the github.com/tafaquh/aerr/zerolog package.
 package aerr
 
 import (
