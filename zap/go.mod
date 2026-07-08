@@ -1,12 +1,10 @@
 module github.com/tafaquh/aerr/zap
 
-// Pinned by the published aerr v1.0.0 go directive; lower to 1.21 when
-// bumping the aerr requirement.
-go 1.24.7
+// Floor matches the root module's go directive (aerr v1.1.0 declares go 1.21).
+go 1.21
 
 require (
-	// Bump to the next aerr release to use structured Frames.
-	github.com/tafaquh/aerr v1.0.0
+	github.com/tafaquh/aerr v1.1.0
 	go.uber.org/zap v1.28.0
 )
 
