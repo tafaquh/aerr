@@ -6,10 +6,10 @@
 // Release checklist: the zerolog module's go.mod must require a published
 // github.com/tafaquh/aerr version that contains every aerr API it uses —
 // CI verifies this with a GOWORK=off consumer smoke test.
-// 1.24.7 only because the zerolog and zap modules are temporarily pinned
-// there by the published aerr v1.0.0; drop to 1.21 together with their
-// go.mod files.
-go 1.24.7
+// 1.23, not the root module's 1.21, because github.com/rs/zerolog v1.35.1
+// itself declares go 1.23 and is a direct dependency of the zerolog,
+// benchmarks, and examples modules in this workspace.
+go 1.23
 
 use (
 	.

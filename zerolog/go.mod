@@ -1,8 +1,8 @@
 module github.com/tafaquh/aerr/zerolog
 
-// Pinned by the published aerr v1.0.0 go directive; lower to 1.21 when
-// bumping the aerr requirement to the next release (which declares 1.21).
-go 1.24.7
+// aerr v1.1.0 only requires go 1.21, but github.com/rs/zerolog v1.35.1 itself
+// declares go 1.23, so 1.23 is the real floor here (go mod tidy enforces this).
+go 1.23
 
 // v1.0.0 required the parent module at a pre-release pseudo-version whose
 // API no longer existed, hidden by a replace directive that consumers do
@@ -12,7 +12,7 @@ retract v1.0.0
 
 require (
 	github.com/rs/zerolog v1.35.1
-	github.com/tafaquh/aerr v1.0.0
+	github.com/tafaquh/aerr v1.1.0
 )
 
 require (
