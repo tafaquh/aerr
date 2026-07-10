@@ -38,6 +38,16 @@
 //		With("password", aerr.Redact(pw)).
 //		Err(nil)
 //
+// To redact by key instead of wrapping each value, install a set of sensitive
+// keys once at startup with [RedactKeys]: [Builder.With] then wraps matching
+// values automatically. Matching is exact and case-sensitive, and keys
+// attached before RedactKeys runs are not retroactively wrapped:
+//
+//	func main() {
+//		aerr.RedactKeys("password", "token")
+//		// ...
+//	}
+//
 // # Chain merging
 //
 // When errors are wrapped, aerr flattens the chain into one value:
