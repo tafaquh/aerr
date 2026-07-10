@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Redact(v)` wraps a sensitive attribute value as a `Redacted`, which masks
+  to `RedactedText` (`"[REDACTED]"`) on every render path — `json.Marshaler`,
+  `slog.LogValuer`, `fmt.Stringer`, and `fmt.Formatter` for every verb
+  (including `%#v` and the numeric verbs, not just `%s`) — so plaintext never
+  reaches a log buffer. `Value()` recovers the original in-process.
+- `RedactKeys(keys...)` installs a process-global, attach-time blocklist of
+  attribute keys whose values `(*Builder).With` wraps with `Redact`
+  automatically. Matching is exact and case-sensitive; keys attached before
+  `RedactKeys` runs are not retroactively wrapped; and `RedactKeys()` with no
+  arguments clears the set.
+- Zero-allocation fast paths for `Redacted` in the zap and zerolog adapters:
+  a typed case renders the placeholder directly, keeping the plaintext off the
+  encode buffer and avoiding the reflection path a `json.Marshaler` value would
+  otherwise take.
+
 ## [1.1.0] - 2026-07-05
 
 ### Added
