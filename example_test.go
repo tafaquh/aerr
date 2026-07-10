@@ -84,3 +84,27 @@ func ExampleRedact() {
 	// {"code":"AUTH","message":"login failed","attributes":{"user":"alice","password":"[REDACTED]"}}
 	// hunter2
 }
+
+// ExampleRedactKeys installs a set of sensitive keys once so With masks their
+// values automatically, without wrapping each one by hand. The set is
+// process-global, so this example clears it on return to leave the others
+// unaffected.
+func ExampleRedactKeys() {
+	aerr.RedactKeys("password", "token")
+	defer aerr.RedactKeys() // clear the process-global set on return
+
+	err := aerr.Code("AUTH").
+		Message("login failed").
+		With("user", "alice").
+		With("password", "hunter2").
+		Err(nil)
+	e, _ := aerr.AsAerr(err)
+
+	out, _ := json.Marshal(e)
+	fmt.Println(string(out))
+	// The plaintext is still recoverable in-process via Value.
+	fmt.Println(e.Attributes()["password"].(aerr.Redacted).Value())
+	// Output:
+	// {"code":"AUTH","message":"login failed","attributes":{"user":"alice","password":"[REDACTED]"}}
+	// hunter2
+}
