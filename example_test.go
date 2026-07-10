@@ -65,3 +65,22 @@ func ExampleError_MarshalJSON() {
 	fmt.Println(string(out))
 	// Output: {"code":"E","message":"boom","attributes":{"k":"v"}}
 }
+
+// ExampleRedact wraps a sensitive attribute so it renders as the placeholder
+// on every path — here JSON — while the original stays recoverable
+// in-process via Value.
+func ExampleRedact() {
+	err := aerr.Code("AUTH").
+		Message("login failed").
+		With("user", "alice").
+		With("password", aerr.Redact("hunter2")).
+		Err(nil)
+	e, _ := aerr.AsAerr(err)
+
+	out, _ := json.Marshal(e)
+	fmt.Println(string(out))
+	fmt.Println(e.Attributes()["password"].(aerr.Redacted).Value())
+	// Output:
+	// {"code":"AUTH","message":"login failed","attributes":{"user":"alice","password":"[REDACTED]"}}
+	// hunter2
+}
