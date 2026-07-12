@@ -26,6 +26,18 @@
 // Stack capture is opt-in: it happens only when StackTrace() is requested,
 // and at most once per chain (see below).
 //
+// # Redacting attributes
+//
+// Wrap a sensitive attribute value with [Redact] so every render path —
+// JSON, slog, and fmt %+v — emits [RedactedText] in its place. The original
+// stays available in-process via [Redacted.Value] and never reaches a log
+// buffer:
+//
+//	err := aerr.Code("AUTH").
+//		Message("login failed").
+//		With("password", aerr.Redact(pw)).
+//		Err(nil)
+//
 // # Chain merging
 //
 // When errors are wrapped, aerr flattens the chain into one value:
