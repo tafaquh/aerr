@@ -176,6 +176,9 @@ func (m plainMarshaller) MarshalZerologObject(evt *zerolog.Event) {
 // costs ~2 allocs per value.
 func appendAttr(dict *zerolog.Event, k string, v any) {
 	switch val := v.(type) {
+	// Redacted first so it never reaches Interface: the typed fast path keeps the mask zero-alloc and the plaintext off the encode buffer.
+	case aerr.Redacted:
+		dict.Str(k, aerr.RedactedText)
 	case string:
 		dict.Str(k, val)
 	case int:
