@@ -91,8 +91,12 @@ func (b *Builder) StackTrace() *Builder {
 }
 
 // With adds a key/value attribute. When the key is already present its
-// value is overwritten in place; insertion order is preserved.
+// value is overwritten in place; insertion order is preserved. When key is
+// in the set installed by [RedactKeys] and value is not already a [Redacted],
+// value is wrapped with [Redact] before being stored, so both the overwrite
+// and append paths persist the masked value.
 func (b *Builder) With(key string, value any) *Builder {
+	value = redactValue(key, value)
 	for i := range b.attrs {
 		if b.attrs[i].key == key {
 			b.attrs[i].val = value

@@ -61,6 +61,7 @@ slog.Error("operation failed", slog.Any("err", err))
 - [Core concepts](#core-concepts)
 - [Logging integrations](#logging-integrations)
 - [Output formats](#output-formats)
+- [Redacting sensitive attributes](#redacting-sensitive-attributes)
 - [API reference](#api-reference)
 - [Complete example](#complete-example)
 - [Performance](#performance)
@@ -458,6 +459,103 @@ b, _ := json.Marshal(err) // err is an *aerr.Error
   ]
 }
 ```
+
+## Redacting sensitive attributes
+
+Wrap a sensitive value with `Redact` and every render path — slog, zerolog, zap, `json.Marshal`, and `%+v` — emits `[REDACTED]` in its place, while the plaintext stays recoverable in-process:
+
+```go
+err := aerr.Code("AUTH").
+    Message("login failed").
+    With("user", "alice").
+    With("password", aerr.Redact(pw)).
+    Err(nil)
+
+slog.Error("login failed", slog.Any("err", err))
+```
+
+```json
+{
+  "level": "ERROR",
+  "msg": "login failed",
+  "err": {
+    "message": "login failed",
+    "code": "AUTH",
+    "attributes": {
+      "user": "alice",
+      "password": "[REDACTED]"
+    }
+  }
+}
+```
+
+To redact by key instead of wrapping each value, install a blocklist once at startup with `RedactKeys`; `With` then wraps matching values automatically, so call sites stay unchanged:
+
+```go
+func main() {
+    aerr.RedactKeys("password", "authorization")
+    // ... any error built after this masks those keys automatically:
+    //     With("password", pw) now renders "[REDACTED]"
+}
+```
+
+### How it works, and why it costs nothing
+
+Masking happens through each ecosystem's **native marshaler hook, during the single serialization pass** aerr already makes. `Redacted` implements `json.Marshaler`, `fmt.Formatter`, `fmt.Stringer`, and `slog.LogValuer`, so each sink resolves it to `[REDACTED]` on its own. The plaintext is never written to a log buffer and then scrubbed out: there is no regex and no output scanning, so there is no post-hoc pass to spike CPU under load.
+
+`RedactKeys` wraps at **attach time**, inside `With` — once per error, not once per log call — so an error logged across several sinks is masked consistently by construction, and future render paths inherit it for free. Following the repo convention of reporting allocation counts rather than (noisy) timings:
+
+- `Redact(v)` is a value copy — **zero allocations** to wrap.
+- With `RedactKeys` disabled, `With` pays one atomic load and a nil check; the disabled and key-miss paths are **allocation-identical** to the pre-feature `With`.
+- Under the zap and zerolog adapters, a `Redacted` attribute renders in **zero allocations** via a typed fast path, where routing it through reflection would otherwise cost ~2 allocations.
+
+### Native-first, per logger
+
+The design deliberately does **not** reimplement redaction a logger already ships. Where a native mechanism exists, `Redacted` rides it; where none does, the adapter adds a typed fast path.
+
+| Logger | Redaction it ships | How `Redacted` rides it | Adapter cost |
+|--------|--------------------|-------------------------|--------------|
+| **slog** | `HandlerOptions.ReplaceAttr` (by key) and `slog.LogValuer` (by value) | implements `slog.LogValuer`; `ReplaceAttr` also reaches aerr attributes at group path `["error", "attributes"]` | n/a (standard library) |
+| **zerolog** | none — hooks cannot rewrite already-written fields | rides zerolog's native `json.Marshaler` handling through `.Interface()` | zero-alloc typed fast path |
+| **zap** | none — [declined upstream](https://github.com/uber-go/zap/issues/993) | rides `AddReflected`'s `json.Marshaler` handling | zero-alloc typed fast path |
+
+Because slog invokes `ReplaceAttr` for every leaf attribute — including those produced by resolving aerr's `LogValuer` — a slog-only codebase can redact by key today, with no aerr wrapping at all:
+
+```go
+slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+    ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+        // aerr attributes arrive under the group path ["error", "attributes"].
+        if len(groups) == 2 && groups[0] == "error" && groups[1] == "attributes" && a.Key == "password" {
+            return slog.String(a.Key, aerr.RedactedText)
+        }
+        return a
+    },
+})))
+
+slog.Error("login failed", slog.Any("error", err))
+```
+
+> **Safe outside aerr, too.** Because `Redacted` implements `fmt.Formatter`, `fmt.Stringer`, and `json.Marshaler`, a `Redacted` handed **directly** to `zap.Any`, zerolog's `.Interface()`, or `fmt` — outside any aerr adapter — still masks: each of those falls back to one of the interfaces above.
+
+### Semantics
+
+- **Exact, case-sensitive** key match — `RedactKeys("password")` does not match `"Password"`.
+- Call `RedactKeys` **once from `main`, before errors are created** (the same convention as the zerolog adapter's `Register`); values attached before it runs are **not** retroactively wrapped. `RedactKeys()` with no arguments clears the set.
+- `Value()` recovers the original in-process and is the only way back to the plaintext.
+- **Every `fmt` verb is covered** — `%v`, `%+v`, `%#v`, `%q`, `%d`, `%x` — because `Redacted` implements `fmt.Formatter`, not merely `fmt.Stringer`. A Stringer-only wrapper leaks through `%#v` (which prints unexported fields) and the numeric verbs; that gap is exactly why you should not hand-roll this.
+- `Attributes()` and `RangeAttrs` intentionally return the `Redacted` wrapper, so the mask survives programmatic re-logging; call `Value()` when you specifically need the original.
+
+### Partial masking
+
+There is no custom-mask API by design. To show, say, the last four digits, pre-mask the string yourself:
+
+```go
+With("card", "****1234")
+```
+
+Or implement the same four methods — `String`, `Format`, `LogValue`, and `MarshalJSON` — on your own type to get identical coverage across every render path.
+
+> **Prior art.** `cockroachdb/errors` + `cockroachdb/redact` take the *allowlist* approach — everything is redactable by default, revealed with opt-in `redact.Safe` — built for PII-safe telemetry. aerr's *blocklist* — opt-in `Redact` / `RedactKeys` — targets the more common need of masking a few known secret fields.
 
 ## API reference
 
