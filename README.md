@@ -62,6 +62,7 @@ slog.Error("operation failed", slog.Any("err", err))
 - [Logging integrations](#logging-integrations)
 - [Output formats](#output-formats)
 - [Redacting sensitive attributes](#redacting-sensitive-attributes)
+- [Aggregating errors](#aggregating-errors)
 - [API reference](#api-reference)
 - [Complete example](#complete-example)
 - [Performance](#performance)
@@ -557,6 +558,67 @@ Or implement the same four methods — `String`, `Format`, `LogValue`, and `Mars
 
 > **Prior art.** `cockroachdb/errors` + `cockroachdb/redact` take the *allowlist* approach — everything is redactable by default, revealed with opt-in `redact.Safe` — built for PII-safe telemetry. aerr's *blocklist* — opt-in `Redact` / `RedactKeys` — targets the more common need of masking a few known secret fields.
 
+## Aggregating errors
+
+Not every failure has a single cause to wrap — sometimes there are several independent failures that happened alongside each other: a batch of items each failing on their own, parallel steps that each report separately, or a deferred cleanup failing after the function body already returned an error. `Join` collects those into one value that follows the Go 1.20+ standard library convention for aggregates (`Unwrap() []error`), so `errors.Is`, `errors.As`, and anything else that walks that convention traverse every branch.
+
+```go
+var err error
+for i, item := range items {
+    if procErr := process(item); procErr != nil {
+        aerr.JoinInto(&err, aerr.Code("ITEM_FAILED").Message(item.Name).With("index", i).Err(procErr))
+    }
+}
+if err != nil {
+    return aerr.Message("import failed").Wrap(err)
+}
+```
+
+`JoinInto` is the loop-accumulator form: it reports whether the step failed, leaves the target untouched on a nil error, and — because `Join` flattens its own aggregates — keeps an accumulation of any length as one flat list instead of an ever-deepening tree. Wrapping the result with the `Builder`, as above, merges the outer message with `": "` and inherits the code and attributes from the first aerr error among the members, the same rules that govern wrapping any other error.
+
+For a deferred cleanup step, use `JoinFunc` instead — it takes the function itself and calls it when the defer fires, capturing a close failure alongside whatever the body already returned:
+
+```go
+func write(path string) (err error) {
+    f, createErr := os.Create(path)
+    if createErr != nil {
+        return createErr
+    }
+    defer aerr.JoinFunc(&err, f.Close)
+    // ...
+    return nil
+}
+```
+
+> **Why not `JoinInto` in the defer?** A deferred call's arguments are evaluated when the `defer` statement runs, not when the deferred call actually fires — `defer aerr.JoinInto(&err, f.Close())` would call `Close` immediately and freeze its result before the rest of the function had run. `JoinFunc` takes `f.Close` itself and calls it at the right time; it requires a named return value.
+
+An aggregate's `Error()` joins its members with `"; "` on a single line, so it doesn't break log pipelines that treat a newline as a record boundary. `%+v` expands it into one bullet per member:
+
+```go
+inner := aerr.Code("DB_ERROR").Message("query failed").With("table", "users").Err(nil)
+err := aerr.Join(inner, errors.New("cache write failed"))
+
+fmt.Println(err)
+fmt.Printf("%+v\n", err)
+```
+
+```
+query failed; cache write failed
+2 errors occurred:
+    - query failed
+      code: DB_ERROR
+      attributes:
+          table=users
+    - cache write failed
+```
+
+### Semantics
+
+- **Nil elements are dropped.** `Join()` and `Join(nil, nil)` both return `nil`.
+- **A single error passes through unchanged.** `Join(err)` returns `err` by identity, not a wrapper, so `==` comparisons and type assertions still work; call `Errors(err)` when a slice is wanted regardless of shape.
+- **Own aggregates flatten, foreign ones stay opaque.** An element that `Join` itself built contributes its members, keeping repeated accumulation flat; an aggregate from anywhere else — including `errors.Join` — is kept as one opaque element. `Errors` is the liberal counterpart: it reads any `Unwrap() []error` implementation, not only aerr's.
+- **`errors.Is`, `errors.As`, `HasCode`, and `AsAerr` all traverse the aggregate**, so a sentinel or code carried by any one member is still found. Plain `errors.Unwrap` — the single-cause form — returns `nil` on an aggregate; that's the standard library's own convention, not an aerr quirk.
+
 ## API reference
 
 `*Error` implements `error`, `slog.LogValuer`, `json.Marshaler`, and `fmt.Formatter`.
@@ -615,6 +677,15 @@ if aerr.HasCode(err, "DB_ERROR") {
 ```
 
 Unlike `Traces()`, `Frames()` is rebuilt on every call, so retain the result rather than re-invoking it in hot paths.
+
+### Aggregating errors
+
+| Function | Description |
+|----------|-------------|
+| `Join(errs ...error) error` | Combine errors into one aggregate; drops nils, returns a lone survivor unchanged (by identity), and flattens aggregates `Join` itself built. |
+| `Errors(err error) []error` | Return an aggregate's members as a fresh slice, reading any `Unwrap() []error` implementation; a plain error yields a one-element slice. |
+| `JoinInto(into *error, err error) bool` | Loop-accumulator form: joins `err` into `*into` and reports whether it was non-nil. Panics if `into` is nil. |
+| `JoinFunc(into *error, fn func() error)` | The defer form of `JoinInto`: calls `fn` when invoked and joins a non-nil result into `*into`. Panics if `into` is nil. |
 
 ## Complete example
 
