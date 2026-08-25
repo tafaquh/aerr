@@ -23,6 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a typed case renders the placeholder directly, keeping the plaintext off the
   encode buffer and avoiding the reflection path a `json.Marshaler` value would
   otherwise take.
+- `Join(errs...)` aggregates errors into one value that follows the Go 1.20+
+  standard convention (`Unwrap() []error`), so `errors.Is`/`errors.As`,
+  `HasCode`, and `AsAerr` search every branch. Nil elements are dropped, a
+  lone remaining error is returned unchanged (no wrapper allocated, so `==`
+  and type assertions survive), and aggregates aerr itself built are spliced
+  in rather than nested, keeping an accumulation flat instead of
+  ever-deepening. Rendering is log-first: `%s`/`%v`/`%q` produce one
+  `"; "`-separated line, `%+v` an indented block with each member's full
+  detail.
+- `Errors(err)` returns any aggregate's members as a fresh slice — reading
+  `Join` results, `errors.Join` results, or any other `Unwrap() []error`
+  implementation — and yields a one-element slice for a plain error, so
+  callers can range without testing the shape first.
+- `JoinInto(&err, step())` accumulates failures in a loop and reports whether
+  the step failed, and `JoinFunc(&err, f.Close)` captures deferred cleanup
+  failures alongside the error a function was already returning (it calls the
+  function at defer time, which `JoinInto` cannot).
 
 ## [1.1.0] - 2026-07-05
 
