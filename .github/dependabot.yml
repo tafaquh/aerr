@@ -1,16 +1,23 @@
 version: 2
 
 updates:
-  # A single gomod entry covering every module in the workspace (root plus
-  # each go.work member). Using `directories` instead of five separate
-  # `directory` entries means a version bump that touches shared or
-  # cross-module dependencies (e.g. zerolog, zap, or their transitive
-  # deps) arrives as one PR with consistent versions everywhere, instead
-  # of five skewed PRs that fail the workspace-wide `go mod tidy -diff`
-  # CI check.
+  # A single gomod entry covering every dependency-bearing module in the
+  # workspace. Using `directories` instead of separate `directory` entries
+  # means a version bump that touches shared or cross-module dependencies
+  # (e.g. zerolog, zap, or their transitive deps) arrives as one PR with
+  # consistent versions everywhere, instead of skewed PRs that fail the
+  # workspace-wide `go mod tidy -diff` CI check.
+  #
+  # The root module ("/") is intentionally excluded: it has zero
+  # dependencies, so the only change dependabot could ever propose there
+  # is raising the `go 1.21` directive to match whatever floor a bumped
+  # module (e.g. zap) now needs. That directive must stay at 1.21 — it's
+  # the library's compatibility floor — and dependabot has raised it by
+  # mistake twice already (#37, #41, both closed for exactly this).
+  # Excluding the root loses nothing, since it has no dependencies to
+  # update in the first place.
   - package-ecosystem: "gomod"
     directories:
-      - "/"
       - "/zerolog"
       - "/zap"
       - "/benchmarks"
