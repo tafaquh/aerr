@@ -48,6 +48,31 @@
 //		// ...
 //	}
 //
+// # Aggregating errors
+//
+// [Join] combines sibling failures — batch items, parallel steps, a deferred
+// cleanup — into one value that follows the Go 1.20+ standard library
+// convention for aggregates: Unwrap() []error, so errors.Is and errors.As
+// traverse every branch. A nil element is dropped, and a lone remaining
+// error is returned unchanged rather than wrapped.
+//
+// [JoinInto] accumulates in a loop; [JoinFunc] is the form for a defer,
+// since it calls its function when the defer fires instead of freezing an
+// argument at defer time:
+//
+//	func write(path string) (err error) {
+//		f, ferr := os.Create(path)
+//		if ferr != nil {
+//			return ferr
+//		}
+//		defer aerr.JoinFunc(&err, f.Close)
+//		// ...
+//		return nil
+//	}
+//
+// The aggregate's Error() joins its members with "; " on one line; wrap it
+// with a [Builder] to add a code, message, or attributes of its own.
+//
 // # Chain merging
 //
 // When errors are wrapped, aerr flattens the chain into one value:
