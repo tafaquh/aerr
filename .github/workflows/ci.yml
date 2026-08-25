@@ -45,7 +45,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go ${{ matrix.go-version }}
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -100,7 +100,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: stable
           cache: true
@@ -142,7 +142,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           # Pinned to match the golangci-lint version below: golangci-lint
           # v2.8.0 is built with Go 1.25, and running it under a newer Go
@@ -177,7 +177,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: stable
           cache: true
