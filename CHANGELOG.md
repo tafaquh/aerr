@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-08-26
 
 ### Added
 
@@ -19,10 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   automatically. Matching is exact and case-sensitive; keys attached before
   `RedactKeys` runs are not retroactively wrapped; and `RedactKeys()` with no
   arguments clears the set.
-- Zero-allocation fast paths for `Redacted` in the zap and zerolog adapters:
-  a typed case renders the placeholder directly, keeping the plaintext off the
-  encode buffer and avoiding the reflection path a `json.Marshaler` value would
-  otherwise take.
 - `Join(errs...)` aggregates errors into one value that follows the Go 1.20+
   standard convention (`Unwrap() []error`), so `errors.Is`/`errors.As`,
   `HasCode`, and `AsAerr` search every branch. Nil elements are dropped, a
@@ -137,5 +133,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON paths.
 - CI, linting, and dependabot configuration added.
 
-[Unreleased]: https://github.com/tafaquh/aerr/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/tafaquh/aerr/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/tafaquh/aerr/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/tafaquh/aerr/compare/v1.0.0...v1.1.0
