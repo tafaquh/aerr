@@ -12,7 +12,7 @@ retract v1.0.0
 
 require (
 	github.com/rs/zerolog v1.35.1
-	github.com/tafaquh/aerr v1.1.0
+	github.com/tafaquh/aerr v1.2.0
 )
 
 require (

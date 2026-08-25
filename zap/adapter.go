@@ -131,6 +131,9 @@ func (m plainMarshaler) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 // JSON and zerolog renderers, which keep going past an unencodable value.
 func addAttr(enc zapcore.ObjectEncoder, k string, v any) error {
 	switch val := v.(type) {
+	// Redacted first so it never reaches AddReflected: the typed fast path keeps the mask zero-alloc and the plaintext off the encode buffer.
+	case aerr.Redacted:
+		enc.AddString(k, aerr.RedactedText)
 	case string:
 		enc.AddString(k, val)
 	case int:
