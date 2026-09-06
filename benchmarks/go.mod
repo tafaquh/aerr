@@ -4,7 +4,7 @@ go 1.23
 
 require (
 	github.com/rs/zerolog v1.35.1
-	github.com/sirupsen/logrus v1.10.1
+	github.com/sirupsen/logrus v1.10.2
 	github.com/tafaquh/aerr v1.2.0
 	github.com/tafaquh/aerr/zap v0.0.0-00010101000000-000000000000
 	github.com/tafaquh/aerr/zerolog v0.0.0-00010101000000-000000000000
