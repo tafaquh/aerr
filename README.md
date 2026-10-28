@@ -267,6 +267,8 @@ The same `*Error` value drives every logger below. Pick the one your codebase al
 | **zerolog** | `github.com/tafaquh/aerr/zerolog` | `Register()` once in `main` (optional) | zero allocations on repeated logging |
 | **zap** | `github.com/tafaquh/aerr/zap` | none | field constructor, drop-in for `zap.Error` |
 
+Whichever logger you use, nothing is dropped: `message` is the full text of the error you log, and an aggregate lists every member under `errors` (see [Aggregating errors](#aggregating-errors)). The zerolog and zap adapters find the aerr payload anywhere in an error's chain; slog structures only the value you hand it, so there you should wrap with aerr rather than `fmt.Errorf` (see below).
+
 ### slog (standard library)
 
 No module and no setup: `*Error` implements `slog.LogValuer`, so any `slog.Any("err", err)` structures the whole payload. See [Quick start](#quick-start) for a full program; the essential call is:
@@ -275,7 +277,9 @@ No module and no setup: `*Error` implements `slog.LogValuer`, so any `slog.Any("
 slog.Error("operation failed", slog.Any("err", err))
 ```
 
-Keys emit in the order `message`, `code`, `attributes`, `stacktrace` (each only when set).
+Keys emit in the order `message`, `code`, `attributes`, `stacktrace` (each only when set), followed by `errors` when the error wraps an aggregate.
+
+> **Keep the payload visible: wrap with aerr, not `fmt.Errorf`.** slog structures the value you hand it, and only an aerr value carries a `LogValue`. An `*aerr.Error` behind a plain wrapper — `fmt.Errorf("handler: %w", err)` — is just an `error` to slog, so it logs as its message string with the code, attributes, and stack trace invisible. Wrap with `aerr.Wrapf(err, "handler")` (or a builder's `Wrap`) instead: the result reads the same, `handler: …`, and is still an `*aerr.Error` carrying the full payload.
 
 ### zerolog
 
@@ -283,7 +287,7 @@ Keys emit in the order `message`, `code`, `attributes`, `stacktrace` (each only 
 go get github.com/tafaquh/aerr/zerolog
 ```
 
-> **Note:** the published `v1.0.0` tag of this module is **retracted** — it did not compile standalone. Install with the next tag once released (`v1.1.0`).
+> **Note:** the `v1.0.0` tag of this module is **retracted** — it did not compile standalone — so `go get` skips it and resolves the latest working release.
 
 Neither usage below requires calling `.Stack()`: an aerr error's trace is always rendered inside the error object, so `.Stack()` is unnecessary and would only duplicate it.
 
@@ -405,17 +409,27 @@ logger.Error("request failed", zap.Object("err", aerrzap.Object(err)))
 
 ### Other sinks
 
-Not every consumer is a logger. For error trackers and tracers, `Frames()` returns the filtered stack as structured `{File, Line, Function}` records — push them straight into Sentry, OpenTelemetry, or any exporter that wants file/line/function separately rather than pre-rendered strings:
+Not every consumer is a logger. For tracing, record the error on the active span with its code as the OpenTelemetry semantic-convention attribute `error.type` (a low-cardinality class of error, which is exactly what a code is) and aerr's trace as the exception event's `exception.stacktrace`. That trace was captured where the error *originated*; `trace.WithStackTrace(true)` would instead capture wherever `RecordError` happens to run:
 
 ```go
-if e, ok := aerr.AsAerr(err); ok {
-    for _, f := range e.Frames() {
-        span.RecordStackFrame(f.File, f.Line, f.Function)
+// imports: go.opentelemetry.io/otel/{attribute,codes,trace}
+func recordError(span trace.Span, err error) {
+    span.SetStatus(codes.Error, err.Error())
+    var opts []trace.EventOption
+    if e, ok := aerr.AsAerr(err); ok {
+        if code := e.Code(); code != "" {
+            span.SetAttributes(attribute.String("error.type", code))
+        }
+        if traces := e.Traces(); len(traces) > 0 {
+            opts = append(opts, trace.WithAttributes(
+                attribute.String("exception.stacktrace", strings.Join(traces, "\n"))))
+        }
     }
+    span.RecordError(err, opts...)
 }
 ```
 
-For everything else, `json.Marshal(err)` and `fmt.Sprintf("%+v", err)` cover non-logging sinks (see [Output formats](#output-formats)).
+Error trackers that want file, line, and function as separate fields (Sentry-style frames) can use `Frames()`, which returns the same filtered stack as structured `{File, Line, Function}` records. For everything else, `json.Marshal(err)` and `fmt.Sprintf("%+v", err)` cover non-logging sinks (see [Output formats](#output-formats)).
 
 ## Output formats
 
@@ -460,6 +474,10 @@ b, _ := json.Marshal(err) // err is an *aerr.Error
   ]
 }
 ```
+
+### Aggregates
+
+A `Join` result — and an `*Error` that wraps one — renders every member in every structured sink (slog, zerolog, zap, and `json.Marshal`): an `errors` array holds one object per member, each with its own code, attributes, and stack trace, and `%+v` lists the members as bullets. No failure is reduced to a line in a combined message. See [Aggregating errors](#aggregating-errors) for an example.
 
 ## Redacting sensitive attributes
 
@@ -536,6 +554,8 @@ slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 slog.Error("login failed", slog.Any("error", err))
 ```
 
+`ReplaceAttr` reaches the error's own `attributes` group. The members of an aggregate are different: slog has no array-of-groups kind, so they render inside the `errors` array through aerr's JSON encoder, where `ReplaceAttr` cannot see. Mask values that can appear on an aggregate's members with `Redact` or `RedactKeys`, which apply on every path.
+
 > **Safe outside aerr, too.** Because `Redacted` implements `fmt.Formatter`, `fmt.Stringer`, and `json.Marshaler`, a `Redacted` handed **directly** to `zap.Any`, zerolog's `.Interface()`, or `fmt` — outside any aerr adapter — still masks: each of those falls back to one of the interfaces above.
 
 ### Semantics
@@ -575,6 +595,36 @@ if err != nil {
 ```
 
 `JoinInto` is the loop-accumulator form: it reports whether the step failed, leaves the target untouched on a nil error, and — because `Join` flattens its own aggregates — keeps an accumulation of any length as one flat list instead of an ever-deepening tree. Wrapping the result with the `Builder`, as above, merges the outer message with `": "` and inherits the code and attributes from the first aerr error among the members, the same rules that govern wrapping any other error.
+
+Every member stays visible in structured output. Logged with slog, the error above — two items failing — lists both under `errors`, each with its own attributes:
+
+```json
+{
+  "message": "import failed: widget: bad sku; gadget: no price",
+  "code": "ITEM_FAILED",
+  "attributes": {
+    "index": 0
+  },
+  "errors": [
+    {
+      "code": "ITEM_FAILED",
+      "message": "widget: bad sku",
+      "attributes": {
+        "index": 0
+      }
+    },
+    {
+      "code": "ITEM_FAILED",
+      "message": "gadget: no price",
+      "attributes": {
+        "index": 1
+      }
+    }
+  ]
+}
+```
+
+The zerolog and zap adapters and `json.Marshal` produce the same `errors` array (with `code` ahead of `message`, as everywhere else in those sinks).
 
 For a deferred cleanup step, use `JoinFunc` instead — it takes the function itself and calls it when the defer fires, capturing a close failure alongside whatever the body already returned:
 
@@ -618,10 +668,11 @@ query failed; cache write failed
 - **A single error passes through unchanged.** `Join(err)` returns `err` by identity, not a wrapper, so `==` comparisons and type assertions still work; call `Errors(err)` when a slice is wanted regardless of shape.
 - **Own aggregates flatten, foreign ones stay opaque.** An element that `Join` itself built contributes its members, keeping repeated accumulation flat; an aggregate from anywhere else — including `errors.Join` — is kept as one opaque element. `Errors` is the liberal counterpart: it reads any `Unwrap() []error` implementation, not only aerr's.
 - **`errors.Is`, `errors.As`, `HasCode`, and `AsAerr` all traverse the aggregate**, so a sentinel or code carried by any one member is still found. Plain `errors.Unwrap` — the single-cause form — returns `nil` on an aggregate; that's the standard library's own convention, not an aerr quirk.
+- **Every member is rendered.** Structured output lists each member under `errors` by the same rules as a top-level error, so a member wrapped with `fmt.Errorf` keeps its own message and still shows the aerr payload it wraps, and a nested `errors.Join` lists its own members. A bare aggregate has no code, attributes, or stack trace of its own; an `*Error` wrapping one inherits the first aerr member's, per the merge rules above.
 
 ## API reference
 
-`*Error` implements `error`, `slog.LogValuer`, `json.Marshaler`, and `fmt.Formatter`.
+`*Error` implements `error`, `slog.LogValuer`, `json.Marshaler`, and `fmt.Formatter` — and so do the aggregates `Join` returns.
 
 ### Building an error
 
@@ -933,17 +984,15 @@ go test -bench="Zap" -benchmem -benchtime=1s
 ## Compatibility
 
 - **Core module (`github.com/tafaquh/aerr`)** — requires **Go 1.21** or newer.
-- **Adapters (`.../zerolog`, `.../zap`)** — temporarily require a **1.24.7** toolchain: their `go.mod` `go` directive is pinned by the published aerr `v1.0.0`, and drops to 1.21 once they are re-tagged against `aerr v1.1.0`.
+- **zap adapter (`.../zap`)** — requires **Go 1.21** or newer.
+- **zerolog adapter (`.../zerolog`)** — requires **Go 1.23** or newer, the floor `github.com/rs/zerolog` itself declares.
 - Works with the standard `errors.Is`, `errors.As`, and `errors.Unwrap`, including `errors.Join` trees.
 
 ## Versioning and releases
 
 This project follows [Semantic Versioning](https://semver.org/). Once a version is tagged its public API is frozen under the [Go 1 compatibility promise](https://go.dev/doc/go1compat) for the module's major version.
 
-**`aerr v1.1.0` is released** (tagged 2026-07-05) — the core API documented here. Remaining planned tags:
-
-- `zerolog/v1.1.0` — activates the retraction of the broken `zerolog/v1.0.0` and requires `aerr v1.1.0`.
-- `zap/v1.0.0` — the first working zap adapter release.
+The core module and the two adapters are versioned independently — tags `vX.Y.Z`, `zerolog/vX.Y.Z`, and `zap/vX.Y.Z`; each adapter requires a published core release. See [Releases](https://github.com/tafaquh/aerr/releases) for the latest of each, [CHANGELOG.md](CHANGELOG.md) for the core module's history, and [RELEASING.md](RELEASING.md) for the release order.
 
 ## License
 
