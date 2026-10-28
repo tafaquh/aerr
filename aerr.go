@@ -146,6 +146,11 @@ func logValue(err error, budget int) (slog.Value, int) {
 			for i, m := range members[:shown] {
 				var v slog.Value
 				v, budget = logValue(m, budget)
+				if len(v.Group()) == 0 {
+					// slog elides an empty group, which would drop this
+					// member and leave a gap in the positional keys.
+					v = slog.GroupValue(slog.String("message", ""))
+				}
 				group[i] = slog.Attr{Key: strconv.Itoa(i), Value: v}
 			}
 			out = append(out, slog.Attr{Key: "errors", Value: slog.GroupValue(group...)})
@@ -190,14 +195,20 @@ func HasCode(err error, code string) bool {
 	return false
 }
 
-// maxMembers caps how many aggregate members one structured rendering
-// expands, counted across every level of nesting; the rest are counted under
-// "errors_omitted". All direct members of an aggregate are allotted before
-// any of them expands its own, so a nested aggregate cannot crowd out its
-// siblings. The cap keeps a large batch — or an aggregate that contains
-// itself — from producing an unbounded record. The logging adapters apply
-// the same cap.
+// maxMembers caps how many aggregate members one rendered error expands,
+// counted across every level of nesting; the rest are counted under
+// "errors_omitted". Within each aggregate, all direct members are allotted
+// before any of them expands its own, and nested aggregates then draw on
+// what remains, in order. The cap keeps a large batch — or an aggregate that
+// contains itself — from producing an unbounded record. The logging adapters
+// apply the same cap.
 const maxMembers = 32
+
+// maxLinks bounds how many single-cause links inspect follows. Real chains
+// are a handful of links deep; the bound only matters for one that loops —
+// an Unwrap that returns its own receiver or an earlier link — which would
+// otherwise hang the renderer.
+const maxLinks = 1024
 
 // inspect walks err's single-cause chain (Unwrap() error links) and returns
 // the nearest *Error on it, plus the members of the aggregate
@@ -206,10 +217,11 @@ const maxMembers = 32
 // separate failures, each rendered on its own under "errors", so none is
 // presented as the whole. A link whose Unwrap panics — typically a typed-nil
 // wrapper that dereferences its receiver — ends the walk instead of the
-// rendering; whatever was found before it is still rendered.
+// rendering, as does a chain longer than maxLinks; whatever was found before
+// that point is still rendered.
 func inspect(err error) (e *Error, members []error) {
 	defer func() { _ = recover() }()
-	for err != nil {
+	for i := 0; err != nil && i < maxLinks; i++ {
 		switch x := err.(type) {
 		case *Error:
 			if x == nil {

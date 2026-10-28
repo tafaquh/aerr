@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tafaquh/aerr"
 )
@@ -717,6 +718,53 @@ func TestJoinRenderingCycleTerminates(t *testing.T) {
 	slog.New(slog.NewJSONHandler(&buf, nil)).Error("x", slog.Any("err", err))
 	if !json.Valid(buf.Bytes()) {
 		t.Errorf("slog record is not valid JSON:\n%s", buf.String())
+	}
+}
+
+// selfLoop is a buggy wrapper whose Unwrap returns itself: a single-cause
+// cycle, which errors.Is would also loop on.
+type selfLoop struct{}
+
+func (*selfLoop) Error() string   { return "self" }
+func (s *selfLoop) Unwrap() error { return s }
+
+// TestJoinRenderingSelfLoopTerminates pins that a member whose Unwrap chain
+// loops back on itself still renders — as its message — instead of hanging
+// JSON and slog rendering.
+func TestJoinRenderingSelfLoopTerminates(t *testing.T) {
+	err := aerr.Join(aerr.Code("ITEM").Message("item a").Err(nil), &selfLoop{})
+	done := make(chan string, 1)
+	go func() {
+		js, _ := json.Marshal(err)
+		var buf bytes.Buffer
+		slog.New(slog.NewJSONHandler(&buf, nil)).Error("x", slog.Any("err", err))
+		done <- string(js) + "\n" + buf.String()
+	}()
+	select {
+	case out := <-done:
+		if !strings.Contains(out, `{"message":"self"}`) || !strings.Contains(out, `"1":{"message":"self"}`) {
+			t.Errorf("self-looping member not rendered as its message:\n%s", out)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("rendering a self-looping member did not terminate")
+	}
+}
+
+// TestJoinSlogKeepsEmptyMembers pins that a member rendering to nothing — an
+// empty message and no aerr payload — keeps its position in slog, which
+// would otherwise elide its empty group and leave a gap in the keys.
+func TestJoinSlogKeepsEmptyMembers(t *testing.T) {
+	err := aerr.Join(errors.New(""), errors.New("b"))
+	line := logJSON(t, func(l *slog.Logger) { l.Error("x", slog.Any("err", err)) })
+	want := map[string]any{
+		"0": map[string]any{"message": ""},
+		"1": map[string]any{"message": "b"},
+	}
+	if got := errField(t, line)["errors"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("slog errors = %#v, want %#v", got, want)
+	}
+	if got, _ := json.Marshal(err); string(got) != `{"message":"; b","errors":[{},{"message":"b"}]}` {
+		t.Errorf("json.Marshal = %s", got)
 	}
 }
 

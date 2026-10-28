@@ -77,7 +77,7 @@
 // render a Join result — and an [Error] that wraps any aggregate, including
 // an errors.Join result — with each member under "errors", carrying its own
 // code, attributes, and stack trace. At most 32 members are expanded per
-// rendering; the rest are counted under "errors_omitted".
+// rendered error; the rest are counted under "errors_omitted".
 //
 // # Chain merging
 //

@@ -17,19 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still shows the aerr payload it wraps). `json.Marshal` emits an array;
   slog, which has no array kind for groups, emits a group keyed by position
   (`"0"`, `"1"`, …), so `ReplaceAttr` and `LogValuer` resolution reach every
-  member value. At most 32 members are expanded per rendering, counted
+  member value. At most 32 members are expanded per rendered error, counted
   across nesting; the rest are counted under `errors_omitted`, which keeps a
   large batch from producing an unbounded record.
 
 ### Changed
 
-- slog output of an `*Error` that wraps an aggregate now includes the
-  members. A `ReplaceAttr` hook that redacts by the exact group path
-  `["error", "attributes"]` does not cover them — member attributes arrive
-  at `["error", "errors", "<i>", "attributes"]` — so match the `attributes`
-  group at any depth instead (the README recipe is updated accordingly).
-  Key-based hooks, `LogValuer` types, `Redact`, and `RedactKeys` need no
-  change.
+- slog output of a `Join` result, and of an `*Error` that wraps an
+  aggregate, now includes the members. A `ReplaceAttr` hook that redacts by
+  the exact group path `["error", "attributes"]` does not cover them —
+  member attributes arrive at `["error", "errors", "<i>", "attributes"]` —
+  so match the `attributes` group at any depth instead (the README recipe is
+  updated accordingly). Key-based hooks, `LogValuer` types, `Redact`, and
+  `RedactKeys` need no change.
 
 ### Fixed
 

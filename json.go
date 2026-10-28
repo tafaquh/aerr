@@ -8,14 +8,16 @@ import (
 )
 
 // MarshalJSON implements json.Marshaler. The key and nesting shape is the
-// same across the slog and zerolog integrations:
+// same across the slog and zerolog integrations (except that slog keys an
+// aggregate's members by position, having no array kind for groups):
 //
 //	{"code": ..., "message": ..., "attributes": {...}, "stacktrace": [...]}
 //
 // When the error wraps an aggregate (see [Join]), an "errors" array follows
 // with one object of this same shape per member, so every member keeps its
-// own code, attributes, and stack trace. At most 32 members are expanded,
-// counted across nesting; the rest are counted under "errors_omitted".
+// own code, attributes, and stack trace. At most 32 members are expanded per
+// rendered error, counted across nesting; the rest are counted under
+// "errors_omitted".
 //
 // Value encodings, however, follow encoding/json and may differ from an
 // adapter's native encoding: here durations serialize as integer
