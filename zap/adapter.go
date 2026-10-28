@@ -4,9 +4,11 @@
 //
 // The payload is found anywhere in an error's chain, and nothing around it
 // is dropped: an aerr error behind a wrapper such as fmt.Errorf with %w is
-// rendered with the wrapper's full message, and an aggregate (aerr.Join,
-// errors.Join) lists every member under "errors", each with its own code,
-// attributes, and stacktrace.
+// rendered with the wrapper's full message, and an aggregate holding one
+// (aerr.Join, errors.Join) lists its members under "errors", each with its
+// own code, attributes, and stacktrace. At most 32 members are expanded per
+// line, counted across nesting; the rest are counted under
+// "errors_omitted".
 //
 // zap has no process-global error marshaler to register, so the idiomatic
 // integration is a field constructor: pass Field wherever a zap.Error
@@ -61,28 +63,37 @@ func Object(err error) zapcore.ObjectMarshaler {
 }
 
 // marshaler returns the structured renderer for err when an *aerr.Error
-// sits anywhere in its chain, and nil otherwise.
-func marshaler(err error) zapcore.ObjectMarshaler {
-	// The e != nil guard tolerates aerr v1.0.0, whose AsAerr returns
-	// (nil, true) for a typed-nil *aerr.Error; falling through renders the
-	// value safely instead of as an empty object.
-	if e, ok := aerr.AsAerr(err); !ok || e == nil {
-		return nil
-	}
-	return objectFor(err)
-}
-
-// objectFor returns the renderer for err. A bare *aerr.Error gets
+// sits anywhere in its chain, and nil otherwise. A bare *aerr.Error gets
 // aerrMarshaler, which holds only the pointer and so converts to an
 // interface without allocating. Anything else — a wrapper such as
-// fmt.Errorf with %w, an aggregate, or a plain aggregate member — is
-// rendered from err itself by chainMarshaler, so the context it adds
-// survives.
-func objectFor(err error) zapcore.ObjectMarshaler {
+// fmt.Errorf with %w, or an aggregate — is rendered from err itself by
+// chainMarshaler, so the context it adds survives.
+func marshaler(err error) zapcore.ObjectMarshaler {
+	if !carriesAerr(err) {
+		return nil
+	}
 	if e, ok := err.(*aerr.Error); ok && e != nil {
 		return aerrMarshaler{e: e}
 	}
 	return chainMarshaler{err: err}
+}
+
+// carriesAerr reports whether an *aerr.Error sits anywhere in err's chain.
+// A chain that panics while being searched — a typed-nil wrapper whose
+// Unwrap dereferences its receiver — counts as carrying one, so it is
+// rendered by marshalError, which degrades the broken link rather than
+// letting the panic escape the log call.
+func carriesAerr(err error) (found bool) {
+	defer func() {
+		if recover() != nil {
+			found = true
+		}
+	}()
+	// The e != nil guard tolerates aerr v1.0.0, whose AsAerr returns
+	// (nil, true) for a typed-nil *aerr.Error; falling through renders the
+	// value safely instead of as an empty object.
+	e, ok := aerr.AsAerr(err)
+	return ok && e != nil
 }
 
 // aerrMarshaler renders an *aerr.Error directly into a zapcore encoder,
@@ -96,27 +107,37 @@ func (m aerrMarshaler) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	if m.e == nil {
 		return nil
 	}
-	return marshalError(enc, m.e)
+	return marshalError(enc, m.e, nil)
 }
 
-// chainMarshaler renders an error that is not itself an *aerr.Error by the
-// same rules as aerrMarshaler (see marshalError).
+// chainMarshaler renders any other error — a wrapper, an aggregate, or an
+// aggregate member of any type — by the same rules (see marshalError).
+// budget is the member allowance shared across one log line; it is nil at
+// the top level, where none has been spent yet.
 type chainMarshaler struct {
-	err error
+	err    error
+	budget *int
 }
 
 // MarshalLogObject implements zapcore.ObjectMarshaler.
 func (m chainMarshaler) MarshalLogObject(enc zapcore.ObjectEncoder) error {
-	return marshalError(enc, m.err)
+	return marshalError(enc, m.err, m.budget)
 }
+
+// maxMembers caps how many aggregate members one log line expands, counted
+// across every level of nesting, matching aerr's own JSON and slog
+// rendering. The rest are counted under "errors_omitted", which keeps a
+// large batch — or an aggregate that contains itself — from producing an
+// unbounded line.
+const maxMembers = 32
 
 // marshalError writes err's structured payload. The message is the one err
 // itself reports, so context a wrapper adds (fmt.Errorf("op: %w", e)) is
 // kept. Code, attributes, and stacktrace come from the nearest *aerr.Error
 // on err's single-cause chain (the accessors are nil-safe, so an err with
-// none simply omits them). When that chain reaches an aggregate, every
-// member is rendered the same way under "errors".
-func marshalError(enc zapcore.ObjectEncoder, err error) error {
+// none simply omits them). When that chain reaches an aggregate, its
+// members are rendered the same way under "errors" (see marshalMembers).
+func marshalError(enc zapcore.ObjectEncoder, err error, budget *int) error {
 	e, members := inspect(err)
 	if code := e.Code(); code != "" {
 		enc.AddString("code", code)
@@ -157,7 +178,30 @@ func marshalError(enc zapcore.ObjectEncoder, err error) error {
 		}
 	}
 	if len(members) > 0 {
-		return enc.AddArray("errors", errorArray(members))
+		return marshalMembers(enc, members, budget)
+	}
+	return nil
+}
+
+// marshalMembers writes an aggregate's members under "errors" and the count
+// left out by the maxMembers budget under "errors_omitted". All direct
+// members are allotted before any of them expands its own, so a nested
+// aggregate cannot crowd out its siblings. The budget is created here, on
+// first use, so a line without an aggregate never allocates it.
+func marshalMembers(enc zapcore.ObjectEncoder, members []error, budget *int) error {
+	if budget == nil {
+		n := maxMembers
+		budget = &n
+	}
+	shown := min(len(members), *budget)
+	*budget -= shown
+	if shown > 0 {
+		if encErr := enc.AddArray("errors", errorArray{members: members[:shown], budget: budget}); encErr != nil {
+			return encErr
+		}
+	}
+	if omitted := len(members) - shown; omitted > 0 {
+		enc.AddInt("errors_omitted", omitted)
 	}
 	return nil
 }
@@ -167,8 +211,11 @@ func marshalError(enc zapcore.ObjectEncoder, err error) error {
 // (Unwrap() []error) the walk ends at, if any. Unlike aerr.AsAerr it never
 // descends into an aggregate, so a bare aggregate is not rendered as if it
 // were its first aerr member: each member is a separate failure and gets
-// its own entry under "errors".
+// its own entry under "errors". A link whose Unwrap panics — typically a
+// typed-nil wrapper that dereferences its receiver — ends the walk instead
+// of the log call; whatever was found before it is still rendered.
 func inspect(err error) (e *aerr.Error, members []error) {
+	defer func() { _ = recover() }()
 	for err != nil {
 		switch x := err.(type) {
 		case *aerr.Error:
@@ -190,14 +237,18 @@ func inspect(err error) (e *aerr.Error, members []error) {
 	return e, nil
 }
 
-// errorArray adapts an aggregate's members to zapcore.ArrayMarshaler,
-// rendering each one as an object by the same rules as its parent.
-type errorArray []error
+// errorArray adapts an aggregate's allotted members to
+// zapcore.ArrayMarshaler, rendering each one as an object by the same rules
+// as its parent and drawing nested members from the same budget.
+type errorArray struct {
+	members []error
+	budget  *int
+}
 
 // MarshalLogArray implements zapcore.ArrayMarshaler.
-func (es errorArray) MarshalLogArray(arr zapcore.ArrayEncoder) error {
-	for _, err := range es {
-		if encErr := arr.AppendObject(objectFor(err)); encErr != nil {
+func (a errorArray) MarshalLogArray(arr zapcore.ArrayEncoder) error {
+	for _, err := range a.members {
+		if encErr := arr.AppendObject(chainMarshaler{err: err, budget: a.budget}); encErr != nil {
 			return encErr
 		}
 	}

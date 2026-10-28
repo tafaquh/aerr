@@ -3,7 +3,9 @@ package aerrzap_test
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/tafaquh/aerr"
@@ -177,4 +179,115 @@ func TestAggregateWithoutAerrFallsBackToZapError(t *testing.T) {
 func asSlice(v any) []any {
 	s, _ := v.([]any)
 	return s
+}
+
+// TestBrokenMembersDoNotCrashTheLogger pins that a member whose chain panics
+// when walked — a typed-nil *fs.PathError, whose Unwrap and Error both
+// dereference the nil receiver — renders as "<nil>" next to the healthy
+// members instead of crashing the log call, wherever it sits in the chain.
+func TestBrokenMembersDoNotCrashTheLogger(t *testing.T) {
+	var pathErr *fs.PathError
+	item := aerr.Code("ITEM").Message("item a").Err(nil)
+	cases := map[string]error{
+		"typed-nil member after aerr":  aerr.Join(item, pathErr),
+		"typed-nil member before aerr": aerr.Join(pathErr, item),
+		"wrapped typed-nil member":     aerr.Join(item, fmt.Errorf("ctx: %w", pathErr)),
+		"typed-nil *aerr.Error member": aerr.Join(item, (*aerr.Error)(nil)),
+		"typed-nil behind a wrapper":   fmt.Errorf("handler: %w", pathErr),
+	}
+	for name, err := range cases {
+		t.Run(name, func(t *testing.T) {
+			for via, got := range map[string]any{"Field": fieldError(t, err), "Object": objectError(t, err)} {
+				obj, ok := got.(map[string]any)
+				if !ok {
+					t.Fatalf("%s: error field is not an object: %#v", via, got)
+				}
+				if _, ok := obj["message"].(string); !ok {
+					t.Errorf("%s: message missing: %#v", via, obj)
+				}
+			}
+		})
+	}
+
+	got, _ := fieldError(t, aerr.Join(item, pathErr)).(map[string]any)
+	want := []any{
+		map[string]any{"code": "ITEM", "message": "item a"},
+		map[string]any{"message": "<nil>"},
+	}
+	if !reflect.DeepEqual(got["errors"], want) {
+		t.Errorf("errors = %#v, want the healthy member and a \"<nil>\" one: %#v", got["errors"], want)
+	}
+}
+
+// TestMemberBudgetOmitsTheRest pins the size cap: at most 32 members are
+// expanded per line, counted across nesting, and the rest are counted under
+// "errors_omitted". Direct members are allotted before nested ones, so a
+// large nested aggregate cannot crowd out its siblings.
+func TestMemberBudgetOmitsTheRest(t *testing.T) {
+	items := func(n int) []error {
+		out := make([]error, n)
+		for i := range out {
+			out[i] = aerr.Code("ITEM").With("index", i).Err(nil)
+		}
+		return out
+	}
+
+	got, _ := fieldError(t, aerr.Join(items(40)...)).(map[string]any)
+	if n := len(asSlice(got["errors"])); n != 32 {
+		t.Errorf("rendered %d members, want 32", n)
+	}
+	if got["errors_omitted"] != float64(8) {
+		t.Errorf("errors_omitted = %#v, want 8", got["errors_omitted"])
+	}
+
+	nested := multiErr(items(40))
+	got, _ = fieldError(t, aerr.Join(nested, items(2)[0], items(2)[1])).(map[string]any)
+	top := asSlice(got["errors"])
+	if len(top) != 3 || got["errors_omitted"] != nil {
+		t.Fatalf("top level = %d members, omitted %#v; want all 3 direct members", len(top), got["errors_omitted"])
+	}
+	inner, _ := top[0].(map[string]any)
+	if n := len(asSlice(inner["errors"])); n != 29 || inner["errors_omitted"] != float64(11) {
+		t.Errorf("nested aggregate = %d members, omitted %#v; want 29 and 11", n, inner["errors_omitted"])
+	}
+}
+
+// TestSelfContainingAggregateTerminates pins that an aggregate containing
+// itself — pathological, but constructible with a mutable foreign type —
+// renders a bounded line instead of recursing until the stack overflows.
+func TestSelfContainingAggregateTerminates(t *testing.T) {
+	cyclic := multiErr{aerr.Code("ITEM").Message("item a").Err(nil), nil}
+	cyclic[1] = cyclic
+
+	got, ok := fieldError(t, cyclic).(map[string]any)
+	if !ok {
+		t.Fatalf("error field is not an object: %#v", got)
+	}
+	if n := countMembers(got); n > 32 {
+		t.Errorf("expanded %d members in total, want at most 32", n)
+	}
+}
+
+// TestRedactedMemberStaysMasked is the leak canary for aggregate members:
+// rendering member attributes must not unmask a Redacted value.
+func TestRedactedMemberStaysMasked(t *testing.T) {
+	const secret = "s3cr3t-member-canary"
+	err := aerr.Join(errors.New("other"), aerr.Code("AUTH").With("password", aerr.Redact(secret)).Err(nil))
+
+	logger, buf := newJSONLogger()
+	logger.Error("boom", aerrzap.Field(err))
+	logger.Error("boom", zap.Object("err", aerrzap.Object(err)))
+	if out := buf.String(); strings.Contains(out, secret) || strings.Count(out, aerr.RedactedText) != 2 {
+		t.Errorf("member attribute not masked on both paths:\n%s", out)
+	}
+}
+
+// countMembers counts every member object under "errors", at any depth.
+func countMembers(obj map[string]any) int {
+	n := 0
+	for _, m := range asSlice(obj["errors"]) {
+		member, _ := m.(map[string]any)
+		n += 1 + countMembers(member)
+	}
+	return n
 }
