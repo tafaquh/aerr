@@ -10,8 +10,7 @@ import (
 //	%s, %v   the combined message (same as Error())
 //	%q       the combined message, quoted
 //	%+v      multi-line detail: message, code, attributes, and the stack
-//	         trace when one was captured (pkg/errors convention), then
-//	         one bullet per member when the error wraps an aggregate
+//	         trace when one was captured (pkg/errors convention)
 func (e *Error) Format(s fmt.State, verb rune) {
 	if e == nil {
 		io.WriteString(s, "<nil>")
@@ -51,9 +50,5 @@ func (e *Error) formatDetailed(w io.Writer) {
 			io.WriteString(w, "\n    ")
 			io.WriteString(w, fr)
 		}
-	}
-	if _, members := inspect(e); len(members) > 0 {
-		io.WriteString(w, "\nerrors:")
-		writeMembers(w, members)
 	}
 }

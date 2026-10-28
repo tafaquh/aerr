@@ -10,15 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Aggregates render structurally. `json.Marshal` and slog render a `Join`
-  result as its combined message plus an `errors` array holding each
-  member's own code, attributes, and stack trace, and an `*Error` that wraps
-  an aggregate lists its members the same way (in JSON and slog, and as an
-  `errors:` section in `%+v`). Each member is rendered by the same rules as
-  a top-level error, so a member wrapped with `fmt.Errorf` keeps its own
-  message and still shows the aerr payload it wraps. Under slog the members
-  render through aerr's JSON encoder, so a `ReplaceAttr` hook does not see
-  member attributes: mask secrets there with `Redact` or `RedactKeys`, which
-  apply on every path.
+  result — and an `*Error` that wraps any aggregate, including an
+  `errors.Join` result — with every member under `errors`, each with its own
+  code, attributes, and stack trace and rendered by the same rules as a
+  top-level error (a member wrapped with `fmt.Errorf` keeps its message and
+  still shows the aerr payload it wraps). `json.Marshal` emits an array;
+  slog, which has no array kind for groups, emits a group keyed by position
+  (`"0"`, `"1"`, …), so `ReplaceAttr` and `LogValuer` resolution reach every
+  member value. At most 32 members are expanded per rendering, counted
+  across nesting; the rest are counted under `errors_omitted`, which keeps a
+  large batch from producing an unbounded record.
+
+### Changed
+
+- slog output of an `*Error` that wraps an aggregate now includes the
+  members. A `ReplaceAttr` hook that redacts by the exact group path
+  `["error", "attributes"]` does not cover them — member attributes arrive
+  at `["error", "errors", "<i>", "attributes"]` — so match the `attributes`
+  group at any depth instead (the README recipe is updated accordingly).
+  Key-based hooks, `LogValuer` types, `Redact`, and `RedactKeys` need no
+  change.
 
 ### Fixed
 

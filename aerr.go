@@ -2,6 +2,7 @@ package aerr
 
 import (
 	"log/slog"
+	"strconv"
 	"sync"
 )
 
@@ -98,25 +99,36 @@ func (e *Error) Traces() []string {
 
 // LogValue implements slog.LogValuer, producing a group with the keys
 // message, code, attributes, and stacktrace (each emitted only when set).
-// When the error wraps an aggregate (see [Join]), an errors key follows,
-// listing every member with its own code, attributes, and stack trace.
-// slog has no array-of-groups kind, so the members render through the same
-// JSON encoder as [Error.MarshalJSON]; a HandlerOptions.ReplaceAttr hook
-// therefore sees this error's own attributes but not a member's — mask
-// sensitive member values with [Redact] or [RedactKeys], which apply on
-// every path.
+// When the error wraps an aggregate (see [Join]), its members follow under
+// errors, each rendered the same way. slog has no array kind for groups, so
+// errors is a group keyed by position ("0", "1", ...), which keeps every
+// member value visible to LogValuer resolution and to a
+// HandlerOptions.ReplaceAttr hook, at group paths such as
+// ["err", "errors", "0", "attributes"]. At most 32 members are expanded,
+// counted across nesting; the rest are counted under errors_omitted.
 func (e *Error) LogValue() slog.Value {
 	if e == nil {
 		return slog.Value{}
 	}
+	v, _ := logValue(e, maxMembers)
+	return v
+}
+
+// logValue renders err as a slog group by the same rules as
+// appendErrorJSON: the message err itself reports; code, attributes, and
+// stacktrace from the nearest *Error on its single-cause chain; then the
+// members of an aggregate on that chain. budget is the member allowance left
+// (see maxMembers); what remains of it is returned.
+func logValue(err error, budget int) (slog.Value, int) {
+	e, members := inspect(err)
 	out := make([]slog.Attr, 0, 4)
-	if e.msg != "" {
-		out = append(out, slog.String("message", e.msg))
+	if msg := errorText(err); msg != "" {
+		out = append(out, slog.String("message", msg))
 	}
-	if e.code != "" {
-		out = append(out, slog.String("code", e.code))
+	if code := e.Code(); code != "" {
+		out = append(out, slog.String("code", code))
 	}
-	if len(e.attrs) > 0 {
+	if e != nil && len(e.attrs) > 0 {
 		sub := make([]slog.Attr, len(e.attrs))
 		for i, a := range e.attrs {
 			sub[i] = slog.Any(a.key, a.val)
@@ -126,10 +138,23 @@ func (e *Error) LogValue() slog.Value {
 	if traces := e.Traces(); len(traces) > 0 {
 		out = append(out, slog.Any("stacktrace", traces))
 	}
-	if _, members := inspect(e); len(members) > 0 {
-		out = append(out, slog.Any("errors", errorList(members)))
+	if len(members) > 0 {
+		shown := min(len(members), budget)
+		budget -= shown
+		if shown > 0 {
+			group := make([]slog.Attr, shown)
+			for i, m := range members[:shown] {
+				var v slog.Value
+				v, budget = logValue(m, budget)
+				group[i] = slog.Attr{Key: strconv.Itoa(i), Value: v}
+			}
+			out = append(out, slog.Attr{Key: "errors", Value: slog.GroupValue(group...)})
+		}
+		if omitted := len(members) - shown; omitted > 0 {
+			out = append(out, slog.Int("errors_omitted", omitted))
+		}
 	}
-	return slog.GroupValue(out...)
+	return slog.GroupValue(out...), budget
 }
 
 // HasCode reports whether any *Error in err's chain carries the given
@@ -165,13 +190,25 @@ func HasCode(err error, code string) bool {
 	return false
 }
 
+// maxMembers caps how many aggregate members one structured rendering
+// expands, counted across every level of nesting; the rest are counted under
+// "errors_omitted". All direct members of an aggregate are allotted before
+// any of them expands its own, so a nested aggregate cannot crowd out its
+// siblings. The cap keeps a large batch — or an aggregate that contains
+// itself — from producing an unbounded record. The logging adapters apply
+// the same cap.
+const maxMembers = 32
+
 // inspect walks err's single-cause chain (Unwrap() error links) and returns
 // the nearest *Error on it, plus the members of the aggregate
 // (Unwrap() []error) the walk ends at, if any. It drives every structured
 // rendering. Unlike AsAerr it never descends into an aggregate: members are
 // separate failures, each rendered on its own under "errors", so none is
-// presented as the whole.
+// presented as the whole. A link whose Unwrap panics — typically a typed-nil
+// wrapper that dereferences its receiver — ends the walk instead of the
+// rendering; whatever was found before it is still rendered.
 func inspect(err error) (e *Error, members []error) {
+	defer func() { _ = recover() }()
 	for err != nil {
 		switch x := err.(type) {
 		case *Error:

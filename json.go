@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 )
 
 // MarshalJSON implements json.Marshaler. The key and nesting shape is the
@@ -13,7 +14,8 @@ import (
 //
 // When the error wraps an aggregate (see [Join]), an "errors" array follows
 // with one object of this same shape per member, so every member keeps its
-// own code, attributes, and stack trace.
+// own code, attributes, and stack trace. At most 32 members are expanded,
+// counted across nesting; the rest are counted under "errors_omitted".
 //
 // Value encodings, however, follow encoding/json and may differ from an
 // adapter's native encoding: here durations serialize as integer
@@ -29,15 +31,18 @@ func (e *Error) MarshalJSON() ([]byte, error) {
 	if e == nil {
 		return []byte("null"), nil
 	}
-	return appendErrorJSON(make([]byte, 0, 128), e), nil
+	buf, _ := appendErrorJSON(make([]byte, 0, 128), e, maxMembers)
+	return buf, nil
 }
 
 // appendErrorJSON appends err as a JSON object. The message is the one err
 // itself reports; code, attributes, and stacktrace come from the nearest
 // *Error on err's single-cause chain; and when that chain reaches an
-// aggregate, each member is appended the same way under "errors". This is
-// the rendering every member of an aggregate gets, whatever its type.
-func appendErrorJSON(buf []byte, err error) []byte {
+// aggregate, its members are appended the same way under "errors". This is
+// the rendering every member of an aggregate gets, whatever its type. budget
+// is the member allowance left (see maxMembers); what remains of it is
+// returned.
+func appendErrorJSON(buf []byte, err error, budget int) ([]byte, int) {
 	e, members := inspect(err)
 	buf = append(buf, '{')
 	open := len(buf) // a field written past this offset needs a comma
@@ -72,25 +77,30 @@ func appendErrorJSON(buf []byte, err error) []byte {
 		buf = append(buf, val...)
 	}
 	if len(members) > 0 {
-		if len(buf) > open {
-			buf = append(buf, ',')
+		shown := min(len(members), budget)
+		budget -= shown
+		if shown > 0 {
+			if len(buf) > open {
+				buf = append(buf, ',')
+			}
+			buf = append(buf, `"errors":[`...)
+			for i, m := range members[:shown] {
+				if i > 0 {
+					buf = append(buf, ',')
+				}
+				buf, budget = appendErrorJSON(buf, m, budget)
+			}
+			buf = append(buf, ']')
 		}
-		buf = append(buf, `"errors":`...)
-		buf = appendErrorsJSON(buf, members)
-	}
-	return append(buf, '}')
-}
-
-// appendErrorsJSON appends members as a JSON array of error objects.
-func appendErrorsJSON(buf []byte, members []error) []byte {
-	buf = append(buf, '[')
-	for i, m := range members {
-		if i > 0 {
-			buf = append(buf, ',')
+		if omitted := len(members) - shown; omitted > 0 {
+			if len(buf) > open {
+				buf = append(buf, ',')
+			}
+			buf = append(buf, `"errors_omitted":`...)
+			buf = strconv.AppendInt(buf, int64(omitted), 10)
 		}
-		buf = appendErrorJSON(buf, m)
 	}
-	return append(buf, ']')
+	return append(buf, '}'), budget
 }
 
 // errorText returns the message a rendered error reports: an *Error's own

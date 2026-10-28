@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"reflect"
 	"strings"
@@ -497,11 +498,23 @@ func TestJoinMarshalJSON(t *testing.T) {
 	}
 }
 
-// TestJoinLogValue pins the slog rendering: the JSON handler emits the same
-// shape as json.Marshal, and the text handler keeps the record on one line.
+// joinItemsSlogMembers is joinItems' "errors" group as slog renders it:
+// keyed by position, because slog has no array kind for groups.
+var joinItemsSlogMembers = map[string]any{
+	"0": map[string]any{"message": "cache write failed"},
+	"1": map[string]any{"code": "ITEM_FAILED", "message": "item a: bad sku", "attributes": map[string]any{"index": float64(0)}},
+	"2": map[string]any{"code": "ITEM_INVALID", "message": "item b: no price", "attributes": map[string]any{"index": float64(1)}},
+}
+
+// TestJoinLogValue pins the slog rendering: the members form a group keyed
+// by position, so every member value goes through the handler like any
+// other attribute, and the text handler keeps the record on one line.
 func TestJoinLogValue(t *testing.T) {
 	line := logJSON(t, func(l *slog.Logger) { l.Error("import", slog.Any("err", joinItems())) })
-	want := mustDecode(t, `{"message":"cache write failed; item a: bad sku; item b: no price","errors":`+joinItemsMembers+`}`)
+	want := map[string]any{
+		"message": "cache write failed; item a: bad sku; item b: no price",
+		"errors":  joinItemsSlogMembers,
+	}
 	if got := errField(t, line); !reflect.DeepEqual(got, want) {
 		t.Errorf("slog err =\n%#v\nwant\n%#v", got, want)
 	}
@@ -514,7 +527,9 @@ func TestJoinLogValue(t *testing.T) {
 	}
 	for _, sub := range []string{
 		`err.message="cache write failed; item a: bad sku; item b: no price"`,
-		`err.errors="[{\"message\":\"cache write failed\"},{\"code\":\"ITEM_FAILED\"`,
+		`err.errors.0.message="cache write failed"`,
+		`err.errors.1.code=ITEM_FAILED`,
+		`err.errors.2.attributes.index=1`,
 	} {
 		if !strings.Contains(out, sub) {
 			t.Errorf("text record missing %s:\n%s", sub, out)
@@ -523,8 +538,8 @@ func TestJoinLogValue(t *testing.T) {
 }
 
 // TestWrappedJoinRendersMembers pins that an *Error wrapping an aggregate
-// keeps its own payload in every renderer and adds the members: under
-// "errors" for JSON and slog, as an "errors:" bullet section for %+v.
+// keeps its own payload and adds the members under "errors", in JSON and in
+// slog.
 func TestWrappedJoinRendersMembers(t *testing.T) {
 	err := aerr.Code("IMPORT_FAILED").Message("import failed").Wrap(joinItems())
 	want := `{"code":"IMPORT_FAILED","message":"import failed: cache write failed; item a: bad sku; item b: no price",` +
@@ -539,28 +554,14 @@ func TestWrappedJoinRendersMembers(t *testing.T) {
 	}
 
 	line := logJSON(t, func(l *slog.Logger) { l.Error("import", slog.Any("err", err)) })
-	if got := errField(t, line); !reflect.DeepEqual(got, mustDecode(t, want)) {
-		t.Errorf("slog err =\n%#v\nwant\n%#v", got, mustDecode(t, want))
+	wantSlog := map[string]any{
+		"code":       "IMPORT_FAILED",
+		"message":    "import failed: cache write failed; item a: bad sku; item b: no price",
+		"attributes": map[string]any{"index": float64(0)},
+		"errors":     joinItemsSlogMembers,
 	}
-
-	wantDetail := strings.Join([]string{
-		"import failed: cache write failed; item a: bad sku; item b: no price",
-		"code: IMPORT_FAILED",
-		"attributes:",
-		"    index=0",
-		"errors:",
-		"    - cache write failed",
-		"    - item a: bad sku",
-		"      code: ITEM_FAILED",
-		"      attributes:",
-		"          index=0",
-		"    - item b: no price",
-		"      code: ITEM_INVALID",
-		"      attributes:",
-		"          index=1",
-	}, "\n")
-	if got := fmt.Sprintf("%+v", err); got != wantDetail {
-		t.Errorf("%%+v =\n%s\nwant\n%s", got, wantDetail)
+	if got := errField(t, line); !reflect.DeepEqual(got, wantSlog) {
+		t.Errorf("slog err =\n%#v\nwant\n%#v", got, wantSlog)
 	}
 }
 
@@ -583,14 +584,17 @@ func TestJoinMembersFoundThroughWrappers(t *testing.T) {
 // TestJoinMemberRenderingRules pins that each member is rendered by the same
 // rules as a top-level error: a wrapper keeps its message and exposes the
 // aerr payload it wraps, a nested aggregate lists its own members, and a nil
-// member — untyped or a typed-nil *Error — renders as "<nil>".
+// member renders as "<nil>" — untyped, a typed-nil *Error, or a typed-nil
+// *fs.PathError, whose Unwrap would panic if the walk did not recover.
 func TestJoinMemberRenderingRules(t *testing.T) {
 	inner := aerr.Code("ITEM_FAILED").Message("item a").With("index", 0).Err(nil)
+	var pathErr *fs.PathError
 	err := aerr.Message("batch failed").Wrap(multiErr{
 		fmt.Errorf("batch 7: %w", inner),
 		errors.Join(errors.New("x"), errors.New("y")),
 		nil,
 		(*aerr.Error)(nil),
+		pathErr,
 	})
 
 	got, jerr := json.Marshal(err)
@@ -602,16 +606,17 @@ func TestJoinMemberRenderingRules(t *testing.T) {
 	want := `{"code":"ITEM_FAILED","message":"batch failed: multi","attributes":{"index":0},"errors":[` +
 		`{"code":"ITEM_FAILED","message":"batch 7: item a","attributes":{"index":0}},` +
 		`{"message":"x\ny","errors":[{"message":"x"},{"message":"y"}]},` +
-		`{"message":"\u003cnil\u003e"},{"message":"\u003cnil\u003e"}]}`
+		`{"message":"\u003cnil\u003e"},{"message":"\u003cnil\u003e"},{"message":"\u003cnil\u003e"}]}`
 	if string(got) != want {
 		t.Errorf("json.Marshal =\n%s\nwant\n%s", got, want)
 	}
 }
 
-// TestJoinMarshalJSONNeverPanics extends MarshalJSON's no-panic contract to
-// aggregates: a member whose Error() panics degrades to a "<panic: ...>"
-// message, both for the member and for the combined message that calls it.
-func TestJoinMarshalJSONNeverPanics(t *testing.T) {
+// TestJoinRenderingNeverPanics extends the no-panic contract to aggregates:
+// a member whose Error() panics degrades to a "<panic: ...>" message, and a
+// typed-nil member whose Unwrap() would panic renders as "<nil>", in JSON and
+// in slog, wherever it sits.
+func TestJoinRenderingNeverPanics(t *testing.T) {
 	got, err := json.Marshal(aerr.Join(errors.New("fine"), badErr{}))
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
@@ -628,6 +633,147 @@ func TestJoinMarshalJSONNeverPanics(t *testing.T) {
 	}
 	if len(out.Errors) != 2 || out.Errors[0].Message != "fine" || !strings.HasPrefix(out.Errors[1].Message, "<panic: ") {
 		t.Errorf("members = %+v, want \"fine\" then a <panic: ...> placeholder", out.Errors)
+	}
+
+	var pathErr *fs.PathError
+	item := aerr.Code("ITEM").Message("item a").Err(nil)
+	for name, err := range map[string]error{
+		"after":   aerr.Join(item, pathErr),
+		"before":  aerr.Join(pathErr, item),
+		"wrapped": aerr.Join(item, fmt.Errorf("ctx: %w", pathErr)),
+	} {
+		got, jerr := json.Marshal(err)
+		if jerr != nil || !json.Valid(got) {
+			t.Errorf("%s: json.Marshal = %s, %v", name, got, jerr)
+		}
+		var buf bytes.Buffer
+		slog.New(slog.NewJSONHandler(&buf, nil)).Error("x", slog.Any("err", err))
+		if strings.Contains(buf.String(), "PANIC") || !strings.Contains(buf.String(), `"code":"ITEM"`) {
+			t.Errorf("%s: slog lost the members to a panic:\n%s", name, buf.String())
+		}
+	}
+}
+
+// TestJoinRenderingBudget pins the size cap: at most 32 members are expanded
+// per rendering, counted across nesting, and the rest are counted under
+// "errors_omitted". All direct members are allotted before any expands its
+// own, so a large nested aggregate cannot crowd out its siblings.
+func TestJoinRenderingBudget(t *testing.T) {
+	items := func(n int) []error {
+		out := make([]error, n)
+		for i := range out {
+			out[i] = aerr.Code("ITEM").With("index", i).Err(nil)
+		}
+		return out
+	}
+
+	var flat struct {
+		Errors        []json.RawMessage
+		ErrorsOmitted int `json:"errors_omitted"`
+	}
+	got, _ := json.Marshal(aerr.Join(items(40)...))
+	if err := json.Unmarshal(got, &flat); err != nil || len(flat.Errors) != 32 || flat.ErrorsOmitted != 8 {
+		t.Errorf("40 members: rendered %d, omitted %d (%v); want 32 and 8", len(flat.Errors), flat.ErrorsOmitted, err)
+	}
+	line := logJSON(t, func(l *slog.Logger) { l.Error("x", slog.Any("err", aerr.Join(items(40)...))) })
+	obj := errField(t, line)
+	if members, _ := obj["errors"].(map[string]any); len(members) != 32 || obj["errors_omitted"] != float64(8) {
+		t.Errorf("slog: rendered %d, omitted %#v; want 32 and 8", len(members), obj["errors_omitted"])
+	}
+
+	var nested struct {
+		Errors []struct {
+			Errors        []json.RawMessage
+			ErrorsOmitted int `json:"errors_omitted"`
+		}
+		ErrorsOmitted int `json:"errors_omitted"`
+	}
+	got, _ = json.Marshal(aerr.Join(multiErr(items(40)), items(1)[0], items(1)[0]))
+	if err := json.Unmarshal(got, &nested); err != nil || len(nested.Errors) != 3 || nested.ErrorsOmitted != 0 {
+		t.Fatalf("top level: %d members, omitted %d (%v); want all 3 direct members", len(nested.Errors), nested.ErrorsOmitted, err)
+	}
+	if n, omitted := len(nested.Errors[0].Errors), nested.Errors[0].ErrorsOmitted; n != 29 || omitted != 11 {
+		t.Errorf("nested aggregate: %d members, omitted %d; want 29 and 11", n, omitted)
+	}
+}
+
+// TestJoinRenderingCycleTerminates pins that an aggregate containing itself —
+// pathological, but constructible with a mutable foreign type — renders a
+// bounded record in JSON and slog instead of recursing until the stack
+// overflows.
+func TestJoinRenderingCycleTerminates(t *testing.T) {
+	cyclic := multiErr{aerr.Code("ITEM").Message("item a").Err(nil), nil}
+	cyclic[1] = cyclic
+	err := aerr.Message("wrapped").Wrap(cyclic)
+
+	got, jerr := json.Marshal(err)
+	if jerr != nil || !json.Valid(got) {
+		t.Fatalf("json.Marshal = %s, %v", got, jerr)
+	}
+	if n := strings.Count(string(got), `"code":"ITEM"`); n > 33 {
+		t.Errorf("expanded %d members, want at most 32 (plus the inherited top-level code)", n)
+	}
+	var buf bytes.Buffer
+	slog.New(slog.NewJSONHandler(&buf, nil)).Error("x", slog.Any("err", err))
+	if !json.Valid(buf.Bytes()) {
+		t.Errorf("slog record is not valid JSON:\n%s", buf.String())
+	}
+}
+
+// token is a slog.LogValuer that masks itself — slog's documented idiom for
+// keeping a sensitive value out of logs.
+type token string
+
+func (token) LogValue() slog.Value { return slog.StringValue("TOKEN") }
+
+// TestJoinSlogRedactionHooks pins that slog's own redaction mechanisms reach
+// aggregate members, because members render as slog groups rather than as an
+// opaque value: a LogValuer type, a key-based ReplaceAttr, a ReplaceAttr that
+// matches the "attributes" group at any depth (the README recipe), and one
+// that drops stack traces by key.
+func TestJoinSlogRedactionHooks(t *testing.T) {
+	member := aerr.Code("AUTH").Message("login failed").StackTrace().
+		With("password", secret).With("token", token(secret)).Err(nil)
+	err := aerr.Message("batch failed").Wrap(aerr.Join(errors.New("other"), member))
+
+	hooks := map[string]func([]string, slog.Attr) slog.Attr{
+		"by key": func(_ []string, a slog.Attr) slog.Attr {
+			if a.Key == "password" {
+				return slog.String(a.Key, aerr.RedactedText)
+			}
+			return a
+		},
+		"by attributes group at any depth": func(groups []string, a slog.Attr) slog.Attr {
+			if len(groups) > 0 && groups[len(groups)-1] == "attributes" && a.Key == "password" {
+				return slog.String(a.Key, aerr.RedactedText)
+			}
+			return a
+		},
+	}
+	for name, hook := range hooks {
+		var buf bytes.Buffer
+		slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{ReplaceAttr: hook})).Error("x", slog.Any("err", err))
+		out := buf.String()
+		if strings.Contains(out, secret) {
+			t.Errorf("%s: secret leaked:\n%s", name, out)
+		}
+		// Masked at the top level (inherited from the member) and inside it;
+		// the token is masked by its own LogValue in both places as well.
+		if strings.Count(out, aerr.RedactedText) != 2 || strings.Count(out, "TOKEN") != 2 {
+			t.Errorf("%s: want the password and token masked twice each:\n%s", name, out)
+		}
+	}
+
+	var buf bytes.Buffer
+	dropStacks := func(_ []string, a slog.Attr) slog.Attr {
+		if a.Key == "stacktrace" {
+			return slog.Attr{}
+		}
+		return a
+	}
+	slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{ReplaceAttr: dropStacks})).Error("x", slog.Any("err", err))
+	if strings.Contains(buf.String(), "stacktrace") {
+		t.Errorf("a key-based ReplaceAttr did not reach a member's stacktrace:\n%s", buf.String())
 	}
 }
 
