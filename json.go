@@ -11,6 +11,10 @@ import (
 //
 //	{"code": ..., "message": ..., "attributes": {...}, "stacktrace": [...]}
 //
+// When the error wraps an aggregate (see [Join]), an "errors" array follows
+// with one object of this same shape per member, so every member keeps its
+// own code, attributes, and stack trace.
+//
 // Value encodings, however, follow encoding/json and may differ from an
 // adapter's native encoding: here durations serialize as integer
 // nanoseconds and []byte as base64, whereas the zerolog integration
@@ -25,16 +29,26 @@ func (e *Error) MarshalJSON() ([]byte, error) {
 	if e == nil {
 		return []byte("null"), nil
 	}
-	buf := make([]byte, 0, 128)
+	return appendErrorJSON(make([]byte, 0, 128), e), nil
+}
+
+// appendErrorJSON appends err as a JSON object. The message is the one err
+// itself reports; code, attributes, and stacktrace come from the nearest
+// *Error on err's single-cause chain; and when that chain reaches an
+// aggregate, each member is appended the same way under "errors". This is
+// the rendering every member of an aggregate gets, whatever its type.
+func appendErrorJSON(buf []byte, err error) []byte {
+	e, members := inspect(err)
 	buf = append(buf, '{')
-	if e.code != "" {
-		buf = appendJSONField(buf, "code", e.code)
+	open := len(buf) // a field written past this offset needs a comma
+	if code := e.Code(); code != "" {
+		buf = appendJSONField(buf, open, "code", code)
 	}
-	if e.msg != "" {
-		buf = appendJSONField(buf, "message", e.msg)
+	if msg := errorText(err); msg != "" {
+		buf = appendJSONField(buf, open, "message", msg)
 	}
-	if len(e.attrs) > 0 {
-		if len(buf) > 1 {
+	if e != nil && len(e.attrs) > 0 {
+		if len(buf) > open {
 			buf = append(buf, ',')
 		}
 		buf = append(buf, `"attributes":{`...)
@@ -50,19 +64,52 @@ func (e *Error) MarshalJSON() ([]byte, error) {
 		buf = append(buf, '}')
 	}
 	if traces := e.Traces(); len(traces) > 0 {
-		if len(buf) > 1 {
+		if len(buf) > open {
 			buf = append(buf, ',')
 		}
 		buf = append(buf, `"stacktrace":`...)
 		val, _ := json.Marshal(traces)
 		buf = append(buf, val...)
 	}
-	buf = append(buf, '}')
-	return buf, nil
+	if len(members) > 0 {
+		if len(buf) > open {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, `"errors":`...)
+		buf = appendErrorsJSON(buf, members)
+	}
+	return append(buf, '}')
 }
 
-func appendJSONField(buf []byte, key, val string) []byte {
-	if len(buf) > 1 {
+// appendErrorsJSON appends members as a JSON array of error objects.
+func appendErrorsJSON(buf []byte, members []error) []byte {
+	buf = append(buf, '[')
+	for i, m := range members {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		buf = appendErrorJSON(buf, m)
+	}
+	return append(buf, ']')
+}
+
+// errorText returns the message a rendered error reports: an *Error's own
+// message, or Error() of anything else, guarded like an attribute value so a
+// nil-ish member reads "<nil>" and a panicking Error() a "<panic: ...>"
+// placeholder instead of crashing the encoder.
+func errorText(err error) string {
+	if e, ok := err.(*Error); ok && e != nil {
+		return e.msg
+	}
+	msg, ok := errString(err)
+	if !ok {
+		return "<nil>"
+	}
+	return msg
+}
+
+func appendJSONField(buf []byte, open int, key, val string) []byte {
+	if len(buf) > open {
 		buf = append(buf, ',')
 	}
 	k, _ := json.Marshal(key)

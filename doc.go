@@ -73,6 +73,11 @@
 // The aggregate's Error() joins its members with "; " on one line; wrap it
 // with a [Builder] to add a code, message, or attributes of its own.
 //
+// Structured renderings keep every member visible. json.Marshal and slog
+// render an aggregate — and an [Error] that wraps one — with an "errors"
+// array holding each member's own code, attributes, and stack trace, and
+// %+v lists the members as bullets.
+//
 // # Chain merging
 //
 // When errors are wrapped, aerr flattens the chain into one value:

@@ -1,6 +1,8 @@
 package aerr
 
 import (
+	"fmt"
+	"log/slog"
 	"reflect"
 	"runtime"
 	"testing"
@@ -105,5 +107,24 @@ func TestFramesAllInternalFiltered(t *testing.T) {
 	e := &Error{pcs: pcs[:n]}
 	if got := e.Frames(); got != nil {
 		t.Errorf("Frames of only aerr/stdlib frames = %v, want nil", got)
+	}
+}
+
+// TestJoinErrorNilReceiver pins that every method of the aggregate type
+// tolerates a nil receiver, like *Error's. Join never returns a typed-nil
+// *joinError, so only an in-package test can reach these guards.
+func TestJoinErrorNilReceiver(t *testing.T) {
+	var j *joinError
+	if j.Error() != "" || j.Unwrap() != nil {
+		t.Error("nil *joinError: want empty Error() and nil Unwrap()")
+	}
+	if got := j.LogValue(); !got.Equal(slog.Value{}) {
+		t.Errorf("nil *joinError LogValue() = %v, want the zero Value", got)
+	}
+	if got, err := j.MarshalJSON(); string(got) != "null" || err != nil {
+		t.Errorf("nil *joinError MarshalJSON() = %s, %v; want null, nil", got, err)
+	}
+	if got := fmt.Sprintf("%v", j); got != "<nil>" {
+		t.Errorf("nil *joinError %%v = %q, want <nil>", got)
 	}
 }

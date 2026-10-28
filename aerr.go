@@ -98,6 +98,13 @@ func (e *Error) Traces() []string {
 
 // LogValue implements slog.LogValuer, producing a group with the keys
 // message, code, attributes, and stacktrace (each emitted only when set).
+// When the error wraps an aggregate (see [Join]), an errors key follows,
+// listing every member with its own code, attributes, and stack trace.
+// slog has no array-of-groups kind, so the members render through the same
+// JSON encoder as [Error.MarshalJSON]; a HandlerOptions.ReplaceAttr hook
+// therefore sees this error's own attributes but not a member's — mask
+// sensitive member values with [Redact] or [RedactKeys], which apply on
+// every path.
 func (e *Error) LogValue() slog.Value {
 	if e == nil {
 		return slog.Value{}
@@ -118,6 +125,9 @@ func (e *Error) LogValue() slog.Value {
 	}
 	if traces := e.Traces(); len(traces) > 0 {
 		out = append(out, slog.Any("stacktrace", traces))
+	}
+	if _, members := inspect(e); len(members) > 0 {
+		out = append(out, slog.Any("errors", errorList(members)))
 	}
 	return slog.GroupValue(out...)
 }
@@ -153,6 +163,34 @@ func HasCode(err error, code string) bool {
 		}
 	}
 	return false
+}
+
+// inspect walks err's single-cause chain (Unwrap() error links) and returns
+// the nearest *Error on it, plus the members of the aggregate
+// (Unwrap() []error) the walk ends at, if any. It drives every structured
+// rendering. Unlike AsAerr it never descends into an aggregate: members are
+// separate failures, each rendered on its own under "errors", so none is
+// presented as the whole.
+func inspect(err error) (e *Error, members []error) {
+	for err != nil {
+		switch x := err.(type) {
+		case *Error:
+			if x == nil {
+				return e, nil
+			}
+			if e == nil {
+				e = x
+			}
+			err = x.cause
+		case interface{ Unwrap() []error }:
+			return e, x.Unwrap()
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+		default:
+			return e, nil
+		}
+	}
+	return e, nil
 }
 
 // AsAerr extracts an *Error from anywhere in err's chain, walking both

@@ -3,6 +3,7 @@ package aerr
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 )
 
@@ -83,8 +84,9 @@ func spliceOf(err error) ([]error, bool) {
 }
 
 // joinError is the aggregate [Join] returns. It is unexported because its
-// only contract is the standard one: error, Unwrap() []error, and
-// fmt.Formatter.
+// only contract is the standard one — error and Unwrap() []error — plus the
+// renderers every aerr value has: fmt.Formatter, slog.LogValuer, and
+// json.Marshaler.
 //
 // Three invariants hold for every value Join produces and are relied on by
 // the methods below: errs holds at least two errors, none of them nil (which
@@ -149,15 +151,62 @@ func (j *joinError) Format(s fmt.State, verb rune) {
 }
 
 // formatDetailed writes the expanded form: a header, then one "- " bullet per
-// member. Each member is rendered with %+v and every newline inside that
-// rendering is re-indented so continuation lines — an *Error's code,
-// attributes, and stack — align under the bullet's text.
+// member (see writeMembers).
 func (j *joinError) formatDetailed(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "%d errors occurred:", len(j.errs))
-	for _, err := range j.errs {
+	writeMembers(w, j.errs)
+}
+
+// writeMembers writes one "- " bullet per member. Each member is rendered
+// with %+v and every newline inside that rendering is re-indented so
+// continuation lines — an *Error's code, attributes, and stack — align under
+// the bullet's text.
+func writeMembers(w io.Writer, members []error) {
+	for _, err := range members {
 		detail := strings.ReplaceAll(fmt.Sprintf("%+v", err), "\n", "\n      ")
 		_, _ = fmt.Fprintf(w, "\n    - %s", detail)
 	}
+}
+
+// LogValue implements slog.LogValuer, producing a group with the combined
+// message and every member under errors, each with its own code,
+// attributes, and stack trace — the same shape [Error.LogValue] gives an
+// *Error that wraps an aggregate, without a code or attributes of its own.
+func (j *joinError) LogValue() slog.Value {
+	if j == nil {
+		return slog.Value{}
+	}
+	return slog.GroupValue(
+		slog.String("message", errorText(j)),
+		slog.Any("errors", errorList(j.errs)),
+	)
+}
+
+// MarshalJSON implements json.Marshaler, producing the combined message and
+// every member under "errors" (see [Error.MarshalJSON] for the member shape).
+// Like the *Error encoding it never fails and never panics.
+func (j *joinError) MarshalJSON() ([]byte, error) {
+	if j == nil {
+		return []byte("null"), nil
+	}
+	return appendErrorJSON(make([]byte, 0, 256), j), nil
+}
+
+// errorList carries an aggregate's members into a slog record. slog has no
+// array-of-groups kind, so the list renders through aerr's JSON encoder as
+// the same "errors" array json.Marshal and the logging adapters produce.
+type errorList []error
+
+// MarshalJSON implements json.Marshaler, used by slog.JSONHandler.
+func (l errorList) MarshalJSON() ([]byte, error) {
+	return appendErrorsJSON(make([]byte, 0, 128), l), nil
+}
+
+// MarshalText implements encoding.TextMarshaler, so slog.TextHandler writes
+// the members as one line of JSON instead of a multi-line %+v dump that
+// would split the record.
+func (l errorList) MarshalText() ([]byte, error) {
+	return l.MarshalJSON()
 }
 
 // Errors returns err's members as a slice, reading any aggregate that follows
