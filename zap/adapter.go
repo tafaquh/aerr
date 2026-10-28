@@ -2,6 +2,12 @@
 // with their full structured payload (code, message, attributes,
 // stacktrace).
 //
+// The payload is found anywhere in an error's chain, and nothing around it
+// is dropped: an aerr error behind a wrapper such as fmt.Errorf with %w is
+// rendered with the wrapper's full message, and an aggregate (aerr.Join,
+// errors.Join) lists every member under "errors", each with its own code,
+// attributes, and stacktrace.
+//
 // zap has no process-global error marshaler to register, so the idiomatic
 // integration is a field constructor: pass Field wherever a zap.Error
 // field would go, no registration needed:
@@ -33,11 +39,8 @@ func Field(err error) zap.Field {
 	if err == nil {
 		return zap.Skip()
 	}
-	// The e != nil guard tolerates aerr v1.0.0, whose AsAerr returns
-	// (nil, true) for a typed-nil *aerr.Error; falling through renders the
-	// value safely instead of as an empty object.
-	if e, ok := aerr.AsAerr(err); ok && e != nil {
-		return zap.Object("error", aerrMarshaler{e: e})
+	if m := marshaler(err); m != nil {
+		return zap.Object("error", m)
 	}
 	return zap.Error(err)
 }
@@ -51,10 +54,35 @@ func Field(err error) zap.Field {
 // When err carries no *aerr.Error the object contains only the error
 // message.
 func Object(err error) zapcore.ObjectMarshaler {
-	if e, ok := aerr.AsAerr(err); ok && e != nil {
-		return aerrMarshaler{e: e}
+	if m := marshaler(err); m != nil {
+		return m
 	}
 	return plainMarshaler{err: err}
+}
+
+// marshaler returns the structured renderer for err when an *aerr.Error
+// sits anywhere in its chain, and nil otherwise.
+func marshaler(err error) zapcore.ObjectMarshaler {
+	// The e != nil guard tolerates aerr v1.0.0, whose AsAerr returns
+	// (nil, true) for a typed-nil *aerr.Error; falling through renders the
+	// value safely instead of as an empty object.
+	if e, ok := aerr.AsAerr(err); !ok || e == nil {
+		return nil
+	}
+	return objectFor(err)
+}
+
+// objectFor returns the renderer for err. A bare *aerr.Error gets
+// aerrMarshaler, which holds only the pointer and so converts to an
+// interface without allocating. Anything else — a wrapper such as
+// fmt.Errorf with %w, an aggregate, or a plain aggregate member — is
+// rendered from err itself by chainMarshaler, so the context it adds
+// survives.
+func objectFor(err error) zapcore.ObjectMarshaler {
+	if e, ok := err.(*aerr.Error); ok && e != nil {
+		return aerrMarshaler{e: e}
+	}
+	return chainMarshaler{err: err}
 }
 
 // aerrMarshaler renders an *aerr.Error directly into a zapcore encoder,
@@ -68,16 +96,44 @@ func (m aerrMarshaler) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	if m.e == nil {
 		return nil
 	}
-	if code := m.e.Code(); code != "" {
+	return marshalError(enc, m.e)
+}
+
+// chainMarshaler renders an error that is not itself an *aerr.Error by the
+// same rules as aerrMarshaler (see marshalError).
+type chainMarshaler struct {
+	err error
+}
+
+// MarshalLogObject implements zapcore.ObjectMarshaler.
+func (m chainMarshaler) MarshalLogObject(enc zapcore.ObjectEncoder) error {
+	return marshalError(enc, m.err)
+}
+
+// marshalError writes err's structured payload. The message is the one err
+// itself reports, so context a wrapper adds (fmt.Errorf("op: %w", e)) is
+// kept. Code, attributes, and stacktrace come from the nearest *aerr.Error
+// on err's single-cause chain (the accessors are nil-safe, so an err with
+// none simply omits them). When that chain reaches an aggregate, every
+// member is rendered the same way under "errors".
+func marshalError(enc zapcore.ObjectEncoder, err error) error {
+	e, members := inspect(err)
+	if code := e.Code(); code != "" {
 		enc.AddString("code", code)
 	}
-	if msg := m.e.Error(); msg != "" {
+	var msg string
+	if x, ok := err.(*aerr.Error); ok && x != nil {
+		msg = x.Error()
+	} else {
+		msg = errMessage(err)
+	}
+	if msg != "" {
 		enc.AddString("message", msg)
 	}
-	if m.e.NumAttrs() > 0 {
-		err := enc.AddObject("attributes", zapcore.ObjectMarshalerFunc(func(dict zapcore.ObjectEncoder) error {
+	if e.NumAttrs() > 0 {
+		encErr := enc.AddObject("attributes", zapcore.ObjectMarshalerFunc(func(dict zapcore.ObjectEncoder) error {
 			var addErr error
-			m.e.RangeAttrs(func(k string, v any) bool {
+			e.RangeAttrs(func(k string, v any) bool {
 				if addErr = addAttr(dict, k, v); addErr != nil {
 					return false
 				}
@@ -85,19 +141,64 @@ func (m aerrMarshaler) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 			})
 			return addErr
 		}))
-		if err != nil {
-			return err
+		if encErr != nil {
+			return encErr
 		}
 	}
-	if traces := m.e.Traces(); len(traces) > 0 {
-		err := enc.AddArray("stacktrace", zapcore.ArrayMarshalerFunc(func(arr zapcore.ArrayEncoder) error {
+	if traces := e.Traces(); len(traces) > 0 {
+		encErr := enc.AddArray("stacktrace", zapcore.ArrayMarshalerFunc(func(arr zapcore.ArrayEncoder) error {
 			for i := 0; i < len(traces); i++ {
 				arr.AppendString(traces[i])
 			}
 			return nil
 		}))
-		if err != nil {
-			return err
+		if encErr != nil {
+			return encErr
+		}
+	}
+	if len(members) > 0 {
+		return enc.AddArray("errors", errorArray(members))
+	}
+	return nil
+}
+
+// inspect walks err's single-cause chain (Unwrap() error links) and returns
+// the nearest *aerr.Error on it, plus the members of the aggregate
+// (Unwrap() []error) the walk ends at, if any. Unlike aerr.AsAerr it never
+// descends into an aggregate, so a bare aggregate is not rendered as if it
+// were its first aerr member: each member is a separate failure and gets
+// its own entry under "errors".
+func inspect(err error) (e *aerr.Error, members []error) {
+	for err != nil {
+		switch x := err.(type) {
+		case *aerr.Error:
+			if x == nil {
+				return e, nil
+			}
+			if e == nil {
+				e = x
+			}
+			err = x.Unwrap()
+		case interface{ Unwrap() []error }:
+			return e, x.Unwrap()
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+		default:
+			return e, nil
+		}
+	}
+	return e, nil
+}
+
+// errorArray adapts an aggregate's members to zapcore.ArrayMarshaler,
+// rendering each one as an object by the same rules as its parent.
+type errorArray []error
+
+// MarshalLogArray implements zapcore.ArrayMarshaler.
+func (es errorArray) MarshalLogArray(arr zapcore.ArrayEncoder) error {
+	for _, err := range es {
+		if encErr := arr.AppendObject(objectFor(err)); encErr != nil {
+			return encErr
 		}
 	}
 	return nil

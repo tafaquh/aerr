@@ -2,6 +2,12 @@
 // that the standard zerolog API renders aerr errors with their full
 // structured payload (code, message, attributes, stacktrace).
 //
+// The payload is found anywhere in an error's chain, and nothing around it
+// is dropped: an aerr error behind a wrapper such as fmt.Errorf with %w is
+// rendered with the wrapper's full message, and an aggregate (aerr.Join,
+// errors.Join) lists every member under "errors", each with its own code,
+// attributes, and stacktrace.
+//
 // There are two ways to use it. Applications that want every
 // logger.Err(err) / Error().Err(err) call to render aerr errors
 // structurally should call Register once in main, following the same
@@ -68,11 +74,8 @@ func errMessage(err error) (msg string) {
 func Register() {
 	prev := zerolog.ErrorMarshalFunc
 	zerolog.ErrorMarshalFunc = func(err error) any {
-		// The e != nil guards tolerate aerr v1.0.0, whose AsAerr returns
-		// (nil, true) for a typed-nil *aerr.Error; falling through renders the
-		// value safely instead of as an empty object.
-		if e, ok := aerr.AsAerr(err); ok && e != nil {
-			return aerrMarshaller{e: e}
+		if m := marshaller(err); m != nil {
+			return m
 		}
 		if prev != nil {
 			return prev(err)
@@ -89,8 +92,8 @@ func Register() {
 // When err carries no *aerr.Error the object contains only the error
 // message.
 func Object(err error) zerolog.LogObjectMarshaler {
-	if e, ok := aerr.AsAerr(err); ok && e != nil {
-		return aerrMarshaller{e: e}
+	if m := marshaller(err); m != nil {
+		return m
 	}
 	return plainMarshaller{err: err}
 }
@@ -101,10 +104,35 @@ func Object(err error) zerolog.LogObjectMarshaler {
 // own zerolog.ErrorMarshalFunc; most applications should call Register
 // instead.
 func AerrMarshalFunc(err error) any {
-	if e, ok := aerr.AsAerr(err); ok && e != nil {
-		return aerrMarshaller{e: e}
+	if m := marshaller(err); m != nil {
+		return m
 	}
 	return err
+}
+
+// marshaller returns the structured renderer for err when an *aerr.Error
+// sits anywhere in its chain, and nil otherwise.
+func marshaller(err error) zerolog.LogObjectMarshaler {
+	// The e != nil guard tolerates aerr v1.0.0, whose AsAerr returns
+	// (nil, true) for a typed-nil *aerr.Error; falling through renders the
+	// value safely instead of as an empty object.
+	if e, ok := aerr.AsAerr(err); !ok || e == nil {
+		return nil
+	}
+	return objectFor(err)
+}
+
+// objectFor returns the renderer for err. A bare *aerr.Error gets
+// aerrMarshaller, which holds only the pointer and so converts to an
+// interface without allocating. Anything else — a wrapper such as
+// fmt.Errorf with %w, an aggregate, or a plain aggregate member — is
+// rendered from err itself by chainMarshaller, so the context it adds
+// survives.
+func objectFor(err error) zerolog.LogObjectMarshaler {
+	if e, ok := err.(*aerr.Error); ok && e != nil {
+		return aerrMarshaller{e: e}
+	}
+	return chainMarshaller{err: err}
 }
 
 // AerrStackMarshaler exposes aerr's captured stack to zerolog's Stack()
@@ -134,23 +162,86 @@ func (m aerrMarshaller) MarshalZerologObject(evt *zerolog.Event) {
 	if m.e == nil {
 		return
 	}
-	if code := m.e.Code(); code != "" {
+	marshalError(evt, m.e)
+}
+
+// chainMarshaller renders an error that is not itself an *aerr.Error by
+// the same rules as aerrMarshaller (see marshalError).
+type chainMarshaller struct {
+	err error
+}
+
+// MarshalZerologObject implements zerolog.LogObjectMarshaler.
+func (m chainMarshaller) MarshalZerologObject(evt *zerolog.Event) {
+	marshalError(evt, m.err)
+}
+
+// marshalError writes err's structured payload. The message is the one err
+// itself reports, so context a wrapper adds (fmt.Errorf("op: %w", e)) is
+// kept. Code, attributes, and stacktrace come from the nearest *aerr.Error
+// on err's single-cause chain (the accessors are nil-safe, so an err with
+// none simply omits them). When that chain reaches an aggregate, every
+// member is rendered the same way under "errors".
+func marshalError(evt *zerolog.Event, err error) {
+	e, members := inspect(err)
+	if code := e.Code(); code != "" {
 		evt.Str("code", code)
 	}
-	if msg := m.e.Error(); msg != "" {
+	var msg string
+	if x, ok := err.(*aerr.Error); ok && x != nil {
+		msg = x.Error()
+	} else {
+		msg = errMessage(err)
+	}
+	if msg != "" {
 		evt.Str("message", msg)
 	}
-	if m.e.NumAttrs() > 0 {
+	if e.NumAttrs() > 0 {
 		dict := zerolog.Dict()
-		m.e.RangeAttrs(func(k string, v any) bool {
+		e.RangeAttrs(func(k string, v any) bool {
 			appendAttr(dict, k, v)
 			return true
 		})
 		evt.Dict("attributes", dict)
 	}
-	if traces := m.e.Traces(); len(traces) > 0 {
+	if traces := e.Traces(); len(traces) > 0 {
 		evt.Strs("stacktrace", traces)
 	}
+	if len(members) > 0 {
+		arr := evt.CreateArray()
+		for _, member := range members {
+			arr.Object(objectFor(member))
+		}
+		evt.Array("errors", arr)
+	}
+}
+
+// inspect walks err's single-cause chain (Unwrap() error links) and returns
+// the nearest *aerr.Error on it, plus the members of the aggregate
+// (Unwrap() []error) the walk ends at, if any. Unlike aerr.AsAerr it never
+// descends into an aggregate, so a bare aggregate is not rendered as if it
+// were its first aerr member: each member is a separate failure and gets
+// its own entry under "errors".
+func inspect(err error) (e *aerr.Error, members []error) {
+	for err != nil {
+		switch x := err.(type) {
+		case *aerr.Error:
+			if x == nil {
+				return e, nil
+			}
+			if e == nil {
+				e = x
+			}
+			err = x.Unwrap()
+		case interface{ Unwrap() []error }:
+			return e, x.Unwrap()
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+		default:
+			return e, nil
+		}
+	}
+	return e, nil
 }
 
 // plainMarshaller renders a non-aerr error for Object.
