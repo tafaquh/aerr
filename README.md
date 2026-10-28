@@ -267,7 +267,7 @@ The same `*Error` value drives every logger below. Pick the one your codebase al
 | **zerolog** | `github.com/tafaquh/aerr/zerolog` | `Register()` once in `main` (optional) | zero allocations on repeated logging |
 | **zap** | `github.com/tafaquh/aerr/zap` | none | field constructor, drop-in for `zap.Error` |
 
-Whichever logger you use, nothing is dropped: `message` is the full text of the error you log, and an aggregate lists every member under `errors` (see [Aggregating errors](#aggregating-errors)). The zerolog and zap adapters find the aerr payload anywhere in an error's chain; slog structures only the value you hand it, so there you should wrap with aerr rather than `fmt.Errorf` (see below).
+Whichever logger you use, nothing is dropped: `message` is the full text of the error you log, and an aggregate lists its members under `errors` (see [Aggregating errors](#aggregating-errors)). The zerolog and zap adapters find the aerr payload anywhere in an error's chain — an aggregate with no aerr error in it is left to the logger's own rendering — while slog structures only the value you hand it, so there you should wrap with aerr rather than `fmt.Errorf` (see below).
 
 ### slog (standard library)
 
@@ -277,7 +277,7 @@ No module and no setup: `*Error` implements `slog.LogValuer`, so any `slog.Any("
 slog.Error("operation failed", slog.Any("err", err))
 ```
 
-Keys emit in the order `message`, `code`, `attributes`, `stacktrace` (each only when set), followed by `errors` when the error wraps an aggregate.
+Keys emit in the order `message`, `code`, `attributes`, `stacktrace` (each only when set), followed by `errors` when the error wraps an aggregate. slog has no array kind for groups, so there `errors` is a group keyed by position (`"0"`, `"1"`, …): every member value goes through the handler like any other attribute, so `ReplaceAttr` and `slog.LogValuer` types reach it.
 
 > **Keep the payload visible: wrap with aerr, not `fmt.Errorf`.** slog structures the value you hand it, and only an aerr value carries a `LogValue`. An `*aerr.Error` behind a plain wrapper — `fmt.Errorf("handler: %w", err)` — is just an `error` to slog, so it logs as its message string with the code, attributes, and stack trace invisible. Wrap with `aerr.Wrapf(err, "handler")` (or a builder's `Wrap`) instead: the result reads the same, `handler: …`, and is still an `*aerr.Error` carrying the full payload.
 
@@ -477,7 +477,7 @@ b, _ := json.Marshal(err) // err is an *aerr.Error
 
 ### Aggregates
 
-A `Join` result — and an `*Error` that wraps one — renders every member in every structured sink (slog, zerolog, zap, and `json.Marshal`): an `errors` array holds one object per member, each with its own code, attributes, and stack trace, and `%+v` lists the members as bullets. No failure is reduced to a line in a combined message. See [Aggregating errors](#aggregating-errors) for an example.
+A `Join` result — and an `*Error` that wraps any aggregate — renders its members in every structured sink (slog, zerolog, zap, and `json.Marshal`): `errors` holds one object per member, each with its own code, attributes, and stack trace, so no failure is reduced to a fragment of a combined message. To keep a large batch from producing an unbounded record, at most 32 members are expanded, counted across nesting, and the rest are counted under `errors_omitted`. See [Aggregating errors](#aggregating-errors) for an example.
 
 ## Redacting sensitive attributes
 
@@ -534,7 +534,7 @@ The design deliberately does **not** reimplement redaction a logger already ship
 
 | Logger | Redaction it ships | How `Redacted` rides it | Adapter cost |
 |--------|--------------------|-------------------------|--------------|
-| **slog** | `HandlerOptions.ReplaceAttr` (by key) and `slog.LogValuer` (by value) | implements `slog.LogValuer`; `ReplaceAttr` also reaches aerr attributes at group path `["error", "attributes"]` | n/a (standard library) |
+| **slog** | `HandlerOptions.ReplaceAttr` (by key) and `slog.LogValuer` (by value) | implements `slog.LogValuer`; `ReplaceAttr` also reaches aerr attributes, in groups named `attributes` | n/a (standard library) |
 | **zerolog** | none — hooks cannot rewrite already-written fields | rides zerolog's native `json.Marshaler` handling through `.Interface()` | zero-alloc typed fast path |
 | **zap** | none — [declined upstream](https://github.com/uber-go/zap/issues/993) | rides `AddReflected`'s `json.Marshaler` handling | zero-alloc typed fast path |
 
@@ -543,8 +543,9 @@ Because slog invokes `ReplaceAttr` for every leaf attribute — including those 
 ```go
 slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
     ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-        // aerr attributes arrive under the group path ["error", "attributes"].
-        if len(groups) == 2 && groups[0] == "error" && groups[1] == "attributes" && a.Key == "password" {
+        // aerr attributes arrive in groups named "attributes": ["error", "attributes"]
+        // for the error itself, ["error", "errors", "0", "attributes"] for an aggregate's members.
+        if len(groups) > 0 && groups[len(groups)-1] == "attributes" && a.Key == "password" {
             return slog.String(a.Key, aerr.RedactedText)
         }
         return a
@@ -554,7 +555,7 @@ slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 slog.Error("login failed", slog.Any("error", err))
 ```
 
-`ReplaceAttr` reaches the error's own `attributes` group. The members of an aggregate are different: slog has no array-of-groups kind, so they render inside the `errors` array through aerr's JSON encoder, where `ReplaceAttr` cannot see. Mask values that can appear on an aggregate's members with `Redact` or `RedactKeys`, which apply on every path.
+Match the `attributes` group at any depth, as above, rather than one exact path: an aggregate's members render as slog groups too, so their attributes reach `ReplaceAttr` one level deeper, under `errors`.
 
 > **Safe outside aerr, too.** Because `Redacted` implements `fmt.Formatter`, `fmt.Stringer`, and `json.Marshaler`, a `Redacted` handed **directly** to `zap.Any`, zerolog's `.Interface()`, or `fmt` — outside any aerr adapter — still masks: each of those falls back to one of the interfaces above.
 
@@ -596,12 +597,12 @@ if err != nil {
 
 `JoinInto` is the loop-accumulator form: it reports whether the step failed, leaves the target untouched on a nil error, and — because `Join` flattens its own aggregates — keeps an accumulation of any length as one flat list instead of an ever-deepening tree. Wrapping the result with the `Builder`, as above, merges the outer message with `": "` and inherits the code and attributes from the first aerr error among the members, the same rules that govern wrapping any other error.
 
-Every member stays visible in structured output. Logged with slog, the error above — two items failing — lists both under `errors`, each with its own attributes:
+Every member stays visible in structured output. With two items failing, the error above lists both under `errors`, each with its own attributes — this is `json.Marshal`, and the zerolog and zap adapters emit the same shape:
 
 ```json
 {
-  "message": "import failed: widget: bad sku; gadget: no price",
   "code": "ITEM_FAILED",
+  "message": "import failed: widget: bad sku; gadget: no price",
   "attributes": {
     "index": 0
   },
@@ -624,7 +625,7 @@ Every member stays visible in structured output. Logged with slog, the error abo
 }
 ```
 
-The zerolog and zap adapters and `json.Marshal` produce the same `errors` array (with `code` ahead of `message`, as everywhere else in those sinks).
+slog keys the same members by position instead, since it has no array kind for groups: `"errors": {"0": {...}, "1": {...}}`.
 
 For a deferred cleanup step, use `JoinFunc` instead — it takes the function itself and calls it when the defer fires, capturing a close failure alongside whatever the body already returned:
 
@@ -668,7 +669,7 @@ query failed; cache write failed
 - **A single error passes through unchanged.** `Join(err)` returns `err` by identity, not a wrapper, so `==` comparisons and type assertions still work; call `Errors(err)` when a slice is wanted regardless of shape.
 - **Own aggregates flatten, foreign ones stay opaque.** An element that `Join` itself built contributes its members, keeping repeated accumulation flat; an aggregate from anywhere else — including `errors.Join` — is kept as one opaque element. `Errors` is the liberal counterpart: it reads any `Unwrap() []error` implementation, not only aerr's.
 - **`errors.Is`, `errors.As`, `HasCode`, and `AsAerr` all traverse the aggregate**, so a sentinel or code carried by any one member is still found. Plain `errors.Unwrap` — the single-cause form — returns `nil` on an aggregate; that's the standard library's own convention, not an aerr quirk.
-- **Every member is rendered.** Structured output lists each member under `errors` by the same rules as a top-level error, so a member wrapped with `fmt.Errorf` keeps its own message and still shows the aerr payload it wraps, and a nested `errors.Join` lists its own members. A bare aggregate has no code, attributes, or stack trace of its own; an `*Error` wrapping one inherits the first aerr member's, per the merge rules above.
+- **Every member is rendered.** Structured output lists each member under `errors` by the same rules as a top-level error, so a member wrapped with `fmt.Errorf` keeps its own message and still shows the aerr payload it wraps, and a nested `errors.Join` lists its own members. At most 32 members are expanded per record, counted across nesting — direct members first — and the rest are counted under `errors_omitted`. A bare aggregate has no code, attributes, or stack trace of its own; an `*Error` wrapping one inherits the first aerr member's, per the merge rules above.
 
 ## API reference
 
@@ -961,7 +962,7 @@ Creating an error costs ~147 ns / 4 allocs; adding `StackTrace()` raises that to
 - **aerr + zap** — structured errors for existing zap codebases.
 - **logrus** — only if you are already invested in its ecosystem.
 
-Caveats worth stating plainly: error **creation** and the **first** log of a stack-carrying error carry the amortized costs above, and code that builds an error and logs it exactly once sees less of the repeated-logging benefit than these benchmarks show.
+Caveats worth stating plainly: error **creation** and the **first** log of a stack-carrying error carry the amortized costs above, and code that builds an error and logs it exactly once sees less of the repeated-logging benefit than these benchmarks show. The zero-allocation figures are for logging an `*aerr.Error` itself: one behind a plain wrapper such as `fmt.Errorf` costs one allocation with zerolog, and an aggregate a few per member.
 
 ### Run benchmarks
 
