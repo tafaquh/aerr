@@ -267,7 +267,7 @@ The same `*Error` value drives every logger below. Pick the one your codebase al
 | **zerolog** | `github.com/tafaquh/aerr/zerolog` | `Register()` once in `main` (optional) | zero allocations on repeated logging |
 | **zap** | `github.com/tafaquh/aerr/zap` | none | field constructor, drop-in for `zap.Error` |
 
-Whichever logger you use, nothing is dropped: `message` is the full text of the error you log, and an aggregate lists its members under `errors` (see [Aggregating errors](#aggregating-errors)). The zerolog and zap adapters find the aerr payload anywhere in an error's chain — an aggregate with no aerr error in it is left to the logger's own rendering — while slog structures only the value you hand it, so there you should wrap with aerr rather than `fmt.Errorf` (see below).
+Whichever logger you use, nothing is silently dropped: `message` is the full text of the error you log, and an aggregate lists its members under `errors`, with any past the cap counted rather than lost (see [Aggregating errors](#aggregating-errors)). The zerolog and zap adapters find the aerr payload anywhere in an error's chain — an aggregate with no aerr error in it is left to the logger's own rendering — while slog structures only the value you hand it, so there you should wrap with aerr rather than `fmt.Errorf` (see below).
 
 ### slog (standard library)
 
@@ -412,7 +412,7 @@ logger.Error("request failed", zap.Object("err", aerrzap.Object(err)))
 Not every consumer is a logger. For tracing, record the error on the active span with its code as the OpenTelemetry semantic-convention attribute `error.type` (a low-cardinality class of error, which is exactly what a code is) and aerr's trace as the exception event's `exception.stacktrace`. That trace was captured where the error *originated*; `trace.WithStackTrace(true)` would instead capture wherever `RecordError` happens to run:
 
 ```go
-// imports: go.opentelemetry.io/otel/{attribute,codes,trace}
+// imports: strings, go.opentelemetry.io/otel/{attribute,codes,trace}
 func recordError(span trace.Span, err error) {
     span.SetStatus(codes.Error, err.Error())
     var opts []trace.EventOption
@@ -477,7 +477,7 @@ b, _ := json.Marshal(err) // err is an *aerr.Error
 
 ### Aggregates
 
-A `Join` result — and an `*Error` that wraps any aggregate — renders its members in every structured sink (slog, zerolog, zap, and `json.Marshal`): `errors` holds one object per member, each with its own code, attributes, and stack trace, so no failure is reduced to a fragment of a combined message. To keep a large batch from producing an unbounded record, at most 32 members are expanded, counted across nesting, and the rest are counted under `errors_omitted`. See [Aggregating errors](#aggregating-errors) for an example.
+A `Join` result — and an `*Error` that wraps any aggregate — renders its members in every structured sink (slog, zerolog, zap, and `json.Marshal`; the adapters do so for an aggregate holding an aerr error): `errors` holds one object per member, each with its own code, attributes, and stack trace, so no failure is reduced to a fragment of a combined message. To keep a large batch from producing an unbounded record, at most 32 members are expanded per rendered error, counted across nesting, and the rest are counted under `errors_omitted`. See [Aggregating errors](#aggregating-errors) for an example.
 
 ## Redacting sensitive attributes
 
@@ -669,7 +669,7 @@ query failed; cache write failed
 - **A single error passes through unchanged.** `Join(err)` returns `err` by identity, not a wrapper, so `==` comparisons and type assertions still work; call `Errors(err)` when a slice is wanted regardless of shape.
 - **Own aggregates flatten, foreign ones stay opaque.** An element that `Join` itself built contributes its members, keeping repeated accumulation flat; an aggregate from anywhere else — including `errors.Join` — is kept as one opaque element. `Errors` is the liberal counterpart: it reads any `Unwrap() []error` implementation, not only aerr's.
 - **`errors.Is`, `errors.As`, `HasCode`, and `AsAerr` all traverse the aggregate**, so a sentinel or code carried by any one member is still found. Plain `errors.Unwrap` — the single-cause form — returns `nil` on an aggregate; that's the standard library's own convention, not an aerr quirk.
-- **Every member is rendered.** Structured output lists each member under `errors` by the same rules as a top-level error, so a member wrapped with `fmt.Errorf` keeps its own message and still shows the aerr payload it wraps, and a nested `errors.Join` lists its own members. At most 32 members are expanded per record, counted across nesting — direct members first — and the rest are counted under `errors_omitted`. A bare aggregate has no code, attributes, or stack trace of its own; an `*Error` wrapping one inherits the first aerr member's, per the merge rules above.
+- **Every member is rendered.** Structured output lists each member under `errors` by the same rules as a top-level error, so a member wrapped with `fmt.Errorf` keeps its own message and still shows the aerr payload it wraps, and a nested `errors.Join` lists its own members. At most 32 members are expanded per rendered error, counted across nesting — each aggregate's direct members before any nested ones, which share what remains in order — and the rest are counted under `errors_omitted`. A bare aggregate has no code, attributes, or stack trace of its own; an `*Error` wrapping one inherits the first aerr member's, per the merge rules above.
 
 ## API reference
 
