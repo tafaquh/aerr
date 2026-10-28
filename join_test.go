@@ -694,3 +694,18 @@ func ExampleJoinFunc() {
 	fmt.Println(write())
 	// Output: write failed; close failed
 }
+
+// ExampleJoin_structured shows that structured output keeps every member of
+// an aggregate visible: json.Marshal — like slog and the logging adapters —
+// lists each member under "errors" with its own code and attributes.
+func ExampleJoin_structured() {
+	err := aerr.Join(
+		aerr.Code("ITEM_FAILED").Message("widget").With("index", 0).Err(nil),
+		errors.New("cache write failed"),
+	)
+
+	b, _ := json.Marshal(err)
+	fmt.Println(string(b))
+	// Output:
+	// {"message":"widget; cache write failed","errors":[{"code":"ITEM_FAILED","message":"widget","attributes":{"index":0}},{"message":"cache write failed"}]}
+}
