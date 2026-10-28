@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tafaquh/aerr"
 	aerrzap "github.com/tafaquh/aerr/zap"
@@ -290,4 +291,30 @@ func countMembers(obj map[string]any) int {
 		n += 1 + countMembers(member)
 	}
 	return n
+}
+
+// selfLoop is a buggy wrapper whose Unwrap returns itself: a single-cause
+// cycle, which errors.Is would also loop on.
+type selfLoop struct{}
+
+func (*selfLoop) Error() string   { return "self" }
+func (s *selfLoop) Unwrap() error { return s }
+
+// TestSelfLoopingMemberTerminates pins that a member whose Unwrap chain
+// loops back on itself still renders — as its message — instead of hanging
+// the log call.
+func TestSelfLoopingMemberTerminates(t *testing.T) {
+	err := aerr.Join(aerr.Code("ITEM").Message("item a").Err(nil), &selfLoop{})
+	done := make(chan any, 1)
+	go func() { done <- fieldError(t, err) }()
+	select {
+	case got := <-done:
+		obj, _ := got.(map[string]any)
+		members := asSlice(obj["errors"])
+		if len(members) != 2 || !reflect.DeepEqual(members[1], map[string]any{"message": "self"}) {
+			t.Errorf("errors = %#v, want the self-looping member rendered as its message", obj["errors"])
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("rendering a self-looping member did not terminate")
+	}
 }

@@ -7,7 +7,7 @@
 // rendered with the wrapper's full message, and an aggregate holding one
 // (aerr.Join, errors.Join) lists its members under "errors", each with its
 // own code, attributes, and stacktrace. At most 32 members are expanded per
-// line, counted across nesting; the rest are counted under
+// rendered error, counted across nesting; the rest are counted under
 // "errors_omitted".
 //
 // zap has no process-global error marshaler to register, so the idiomatic
@@ -35,8 +35,10 @@ import (
 // Field renders err under the key "error". When err carries an
 // *aerr.Error anywhere in its chain the field is a nested object with
 // code, message, attributes, and stacktrace; otherwise it falls back to
-// zap.Error, so Field is always a safe drop-in replacement. A nil err
-// produces a no-op field, matching zap.Error's behavior.
+// zap.Error, so Field is always a safe drop-in replacement. (A chain that
+// panics while being searched is rendered by aerr instead, so the panic
+// cannot escape the log call.) A nil err produces a no-op field, matching
+// zap.Error's behavior.
 func Field(err error) zap.Field {
 	if err == nil {
 		return zap.Skip()
@@ -124,12 +126,18 @@ func (m chainMarshaler) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	return marshalError(enc, m.err, m.budget)
 }
 
-// maxMembers caps how many aggregate members one log line expands, counted
-// across every level of nesting, matching aerr's own JSON and slog
+// maxMembers caps how many aggregate members one rendered error expands,
+// counted across every level of nesting, matching aerr's own JSON and slog
 // rendering. The rest are counted under "errors_omitted", which keeps a
 // large batch — or an aggregate that contains itself — from producing an
 // unbounded line.
 const maxMembers = 32
+
+// maxLinks bounds how many single-cause links inspect follows, matching
+// aerr's own rendering. Real chains are a handful of links deep; the bound
+// only matters for one that loops — an Unwrap that returns its own receiver
+// or an earlier link — which would otherwise hang the log call.
+const maxLinks = 1024
 
 // marshalError writes err's structured payload. The message is the one err
 // itself reports, so context a wrapper adds (fmt.Errorf("op: %w", e)) is
@@ -184,10 +192,11 @@ func marshalError(enc zapcore.ObjectEncoder, err error, budget *int) error {
 }
 
 // marshalMembers writes an aggregate's members under "errors" and the count
-// left out by the maxMembers budget under "errors_omitted". All direct
-// members are allotted before any of them expands its own, so a nested
-// aggregate cannot crowd out its siblings. The budget is created here, on
-// first use, so a line without an aggregate never allocates it.
+// left out by the maxMembers budget under "errors_omitted". All of an
+// aggregate's direct members are allotted before any of them expands its
+// own, and nested aggregates then draw on what remains, in order. The budget
+// is created here, on first use, so a line without an aggregate never
+// allocates it.
 func marshalMembers(enc zapcore.ObjectEncoder, members []error, budget *int) error {
 	if budget == nil {
 		n := maxMembers
@@ -213,10 +222,11 @@ func marshalMembers(enc zapcore.ObjectEncoder, members []error, budget *int) err
 // were its first aerr member: each member is a separate failure and gets
 // its own entry under "errors". A link whose Unwrap panics — typically a
 // typed-nil wrapper that dereferences its receiver — ends the walk instead
-// of the log call; whatever was found before it is still rendered.
+// of the log call, as does a chain longer than maxLinks; whatever was found
+// before that point is still rendered.
 func inspect(err error) (e *aerr.Error, members []error) {
 	defer func() { _ = recover() }()
-	for err != nil {
+	for i := 0; err != nil && i < maxLinks; i++ {
 		switch x := err.(type) {
 		case *aerr.Error:
 			if x == nil {
