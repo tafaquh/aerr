@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   member value. At most 32 members are expanded per rendered error, counted
   across nesting; the rest are counted under `errors_omitted`, which keeps a
   large batch from producing an unbounded record.
+- `(*Error).StackTrace() []uintptr` returns the captured program counters
+  under the name error trackers read, so Sentry's and New Relic's Go SDKs
+  report an aerr error's origin stack with no glue code instead of the
+  stack where it reached the SDK. `(*Error).ErrorType() string` returns the
+  code, which OpenTelemetry's `semconv.ErrorType` records as `error.type`
+  (found through wrappers from semconv v1.40).
 
 ### Changed
 
@@ -35,6 +41,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `json.Marshal` of a `Join` result produced `{}`, and slog flattened it to
   its message string, losing every member's code and attributes.
+
+### Performance
+
+- Creating an error with attributes costs one allocation fewer: a builder
+  keeps its first four attributes inline, and a wrap that adds none shares
+  the inner error's. A three-level chain adding one attribute per level
+  drops from 9 allocations to 6.
+- `MarshalJSON` writes strings that need no escaping, and plain string, int,
+  and bool attribute values, directly instead of through `json.Marshal`: a
+  typical error marshals in 1–2 allocations instead of 18, with
+  byte-identical output.
+- Logging an `*Error` with attributes through slog costs one allocation
+  fewer: the record's fields and its attributes group share one slice.
 
 ## [1.2.0] - 2026-08-26
 

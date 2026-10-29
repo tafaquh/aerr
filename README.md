@@ -122,26 +122,7 @@ func main() {
 }
 ```
 
-Keys appear in the order `message`, `code`, `attributes`, `stacktrace`:
-
-```json
-{
-  "time": "2026-07-02T14:18:02Z",
-  "level": "ERROR",
-  "msg": "operation failed",
-  "err": {
-    "message": "failed to query user: connection timeout",
-    "code": "DB_ERROR",
-    "attributes": {
-      "user_id": "123",
-      "table": "users"
-    },
-    "stacktrace": [
-      "/app/main.go:19 (main.main)"
-    ]
-  }
-}
-```
+It prints the record shown at the top of this page, with keys in the order `message`, `code`, `attributes`, `stacktrace`.
 
 ## Core concepts
 
@@ -281,6 +262,21 @@ Keys emit in the order `message`, `code`, `attributes`, `stacktrace` (each only 
 
 > **Keep the payload visible: wrap with aerr, not `fmt.Errorf`.** slog structures the value you hand it, and only an aerr value carries a `LogValue`. An `*aerr.Error` behind a plain wrapper — `fmt.Errorf("handler: %w", err)` — is just an `error` to slog, so it logs as its message string with the code, attributes, and stack trace invisible. Wrap with `aerr.Wrapf(err, "handler")` (or a builder's `Wrap`) instead: the result reads the same, `handler: …`, and is still an `*aerr.Error` carrying the full payload.
 
+When the wrapping is out of your hands — middleware or a library adds `fmt.Errorf` layers — one `ReplaceAttr` hook restores the payload at log time. slog resolves `LogValuer`s before calling the hook, so it only ever sees errors that are not aerr values themselves, and `aerr.Wrapf(err, "")` turns the ones carrying an aerr error into an `*aerr.Error` with the same message:
+
+```go
+slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+    ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+        if err, ok := a.Value.Any().(error); ok {
+            if _, found := aerr.AsAerr(err); found {
+                return slog.Any(a.Key, aerr.Wrapf(err, ""))
+            }
+        }
+        return a
+    },
+}))
+```
+
 ### zerolog
 
 ```bash
@@ -409,17 +405,19 @@ logger.Error("request failed", zap.Object("err", aerrzap.Object(err)))
 
 ### Other sinks
 
-Not every consumer is a logger. For tracing, record the error on the active span with its code as the OpenTelemetry semantic-convention attribute `error.type` (a low-cardinality class of error, which is exactly what a code is) and aerr's trace as the exception event's `exception.stacktrace`. That trace was captured where the error *originated*; `trace.WithStackTrace(true)` would instead capture wherever `RecordError` happens to run:
+Not every consumer is a logger, and the common observability tools work with aerr errors directly:
+
+- **Error trackers.** `(*Error).StackTrace()` returns the captured program counters under the name Sentry's and New Relic's Go SDKs look for, so a captured aerr error reports the stack where it *originated*, not where it was handed to the SDK — with no glue code. `Frames()` gives the same stack as structured, filtered `{File, Line, Function}` records for other exporters.
+- **OpenTelemetry.** `(*Error).ErrorType()` returns the code, which `semconv.ErrorType(err)` records as the low-cardinality `error.type` attribute (through wrappers too, from semconv v1.40). Record aerr's trace as `exception.stacktrace` yourself: `trace.WithStackTrace(true)` would capture wherever `RecordError` runs, not where the error originated.
 
 ```go
-// imports: strings, go.opentelemetry.io/otel/{attribute,codes,trace}
+// imports: strings, go.opentelemetry.io/otel/{attribute,codes,trace},
+// semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 func recordError(span trace.Span, err error) {
     span.SetStatus(codes.Error, err.Error())
+    span.SetAttributes(semconv.ErrorType(err)) // the aerr code, via ErrorType
     var opts []trace.EventOption
     if e, ok := aerr.AsAerr(err); ok {
-        if code := e.Code(); code != "" {
-            span.SetAttributes(attribute.String("error.type", code))
-        }
         if traces := e.Traces(); len(traces) > 0 {
             opts = append(opts, trace.WithAttributes(
                 attribute.String("exception.stacktrace", strings.Join(traces, "\n"))))
@@ -429,7 +427,7 @@ func recordError(span trace.Span, err error) {
 }
 ```
 
-Error trackers that want file, line, and function as separate fields (Sentry-style frames) can use `Frames()`, which returns the same filtered stack as structured `{File, Line, Function}` records. For everything else, `json.Marshal(err)` and `fmt.Sprintf("%+v", err)` cover non-logging sinks (see [Output formats](#output-formats)).
+For everything else, `json.Marshal(err)` and `fmt.Sprintf("%+v", err)` cover non-logging sinks (see [Output formats](#output-formats)).
 
 ## Output formats
 
@@ -474,10 +472,6 @@ b, _ := json.Marshal(err) // err is an *aerr.Error
   ]
 }
 ```
-
-### Aggregates
-
-A `Join` result — and an `*Error` that wraps any aggregate — renders its members in every structured sink (slog, zerolog, zap, and `json.Marshal`; the adapters do so for an aggregate holding an aerr error): `errors` holds one object per member, each with its own code, attributes, and stack trace, so no failure is reduced to a fragment of a combined message. To keep a large batch from producing an unbounded record, at most 32 members are expanded per rendered error, counted across nesting, and the rest are counted under `errors_omitted`. See [Aggregating errors](#aggregating-errors) for an example.
 
 ## Redacting sensitive attributes
 
@@ -695,8 +689,6 @@ query failed; cache write failed
 | `(*Builder).ErrMsg(msg string) error` | Finalize with a plain-text cause. |
 | `(*Builder).Wrap(err error) error` | Finalize wrapping another error; returns `nil` if `err` is `nil`. |
 
-A `*Builder` is not safe for concurrent use. Finalizing copies its state, so a builder may be reused as a template afterwards (from one goroutine). The returned `*Error` is immutable and safe to share or log from multiple goroutines.
-
 ### Inspecting an error
 
 | Function | Description |
@@ -711,6 +703,8 @@ A `*Builder` is not safe for concurrent use. Finalizing copies its state, so a b
 | `(*Error).Attributes() map[string]any` | Snapshot attributes as a freshly-allocated map. |
 | `(*Error).Traces() []string` | The filtered stack trace (rendered once, cached). |
 | `(*Error).Frames() []Frame` | Structured `{File, Line, Function}` frames for exporters. |
+| `(*Error).StackTrace() []uintptr` | The captured program counters, unfiltered: the method Sentry's and New Relic's SDKs read. |
+| `(*Error).ErrorType() string` | The code, for OpenTelemetry's `semconv.ErrorType` (`error.type`). |
 
 ```go
 type Frame struct {
@@ -751,61 +745,6 @@ go run main.go -zerolog   # zerolog output
 
 It threads an error up through a controller → service → repository → database call stack, capturing a trace only in the two deepest layers. Because the deepest stack wins, the repository's `StackTrace()` is a no-op and the trace kept is the one from `QueryDatabase`; attributes merge outer-first.
 
-```go
-// HandleUserRequest simulates a controller/handler layer
-func HandleUserRequest(userID string) error {
-    err := GetUserService(userID)
-    if err != nil {
-        return aerr.Code("CONTROLLER_ERROR").
-            Message("failed to handle user request").
-            With("endpoint", "/api/users/"+userID).
-            With("method", "GET").
-            Wrap(err)
-    }
-    return nil
-}
-
-// GetUserService simulates a service layer
-func GetUserService(userID string) error {
-    err := FindUserRepository(userID)
-    if err != nil {
-        return aerr.Code("SERVICE_ERROR").
-            Message("user service failed").
-            With("service", "UserService").
-            With("operation", "GetUser").
-            Wrap(err)
-    }
-    return nil
-}
-
-// FindUserRepository simulates a repository layer
-func FindUserRepository(userID string) error {
-    err := QueryDatabase("SELECT * FROM users WHERE id = ?", userID)
-    if err != nil {
-        return aerr.Code("REPOSITORY_ERROR").
-            Message("failed to find user in repository").
-            StackTrace().
-            With("user_id", userID).
-            With("table", "users").
-            Wrap(err)
-    }
-    return nil
-}
-
-// QueryDatabase simulates a database layer
-func QueryDatabase(query string, args ...any) error {
-    dbErr := errors.New("connection timeout after 5s")
-
-    return aerr.Code("DB_ERROR").
-        Message("database query failed").
-        StackTrace().
-        With("query", query).
-        With("args", args).
-        With("driver", "postgres").
-        Err(dbErr)
-}
-```
-
 <details>
 <summary><strong>slog output</strong></summary>
 
@@ -842,127 +781,68 @@ func QueryDatabase(query string, args ...any) error {
 
 </details>
 
-<details>
-<summary><strong>zerolog output</strong></summary>
-
-Same merge; keys appear as `code` then `message`. The stack is already inside the `error` object, so calling `.Stack()` is unnecessary and would only duplicate it.
-
-```json
-{
-  "level": "error",
-  "error": {
-    "code": "CONTROLLER_ERROR",
-    "message": "failed to handle user request: user service failed: failed to find user in repository: database query failed: connection timeout after 5s",
-    "attributes": {
-      "endpoint": "/api/users/12345",
-      "method": "GET",
-      "service": "UserService",
-      "operation": "GetUser",
-      "user_id": "12345",
-      "table": "users",
-      "query": "SELECT * FROM users WHERE id = ?",
-      "args": ["12345"],
-      "driver": "postgres"
-    },
-    "stacktrace": [
-      "/app/examples/main.go:105 (main.QueryDatabase)",
-      "/app/examples/main.go:82 (main.FindUserRepository)",
-      "/app/examples/main.go:69 (main.GetUserService)",
-      "/app/examples/main.go:56 (main.HandleUserRequest)",
-      "/app/examples/main.go:47 (main.runWithZerolog)",
-      "/app/examples/main.go:20 (main.main)"
-    ]
-  },
-  "time": "2026-07-02T14:15:48+07:00",
-  "message": "request failed"
-}
-```
-
-</details>
+The zerolog output carries the same fields with `code` ahead of `message`; the stack stays inside the `error` object, so `.Stack()` is unnecessary.
 
 ## Performance
 
-Measured on an Intel Core Ultra 9 185H (WSL2) with `go test -bench=. -benchmem -benchtime=1s`. Numbers vary by machine; run them yourself (see below).
+Measured on an Apple M5 Pro (macOS, Go 1.25): the median of three runs of `go test -bench=. -benchmem` in `benchmarks/`. Timings vary by machine — run them yourself (see below); allocation counts do not.
 
 ### The core idea
 
-aerr structures an error's fields **once, at creation**. A logging adapter then replays that pre-structured payload, so **repeated logging of the same error amortizes to zero allocations** with zerolog. The trade-off is paid up front at creation, and once more the first time a stack-carrying error is logged (a single trace render, then cached).
+aerr structures an error's fields **once, at creation**; a logging adapter then replays that pre-structured payload. With zerolog the replay is **allocation-free** — repeated logging of the same error costs zero allocations — and with zap it adds nothing beyond zap's own variadic field slice. The trade-off is paid up front at creation, and once more the first time a stack-carrying error is logged (a single trace render, then cached).
 
-The benchmarks below log a **prebuilt** error repeatedly, which is exactly the shape that benefits from this amortization. A raw logger, by contrast, re-appends every field on **each** call — so with many fields or deep chains, aerr + zerolog can end up *faster* than raw zerolog.
+The benchmarks log a **prebuilt** error repeatedly. aerr does work the raw-logger baselines don't — nesting the error object, keeping the merged chain, deduplicating attributes — so it is not faster than hand-written raw logging; what it buys is that structure at a small, flat cost.
 
-**Simple error (one field):**
-| Logger         | Time      | B/op  | Allocs |
-|----------------|-----------|-------|--------|
-| Raw zerolog    | 72.7 ns   | 0     | 0      |
-| aerr + zerolog | 119.3 ns  | 0     | 0      |
-| Raw zap        | 368.8 ns  | 0     | 0      |
-| aerr + zap     | 521.5 ns  | 64    | 1      |
-| aerr + slog    | 720.6 ns  | 208   | 2      |
-| logrus         | 1232 ns   | 873   | 19     |
+**Simple error:**
+| Logger         | Time     | B/op | Allocs |
+|----------------|----------|------|--------|
+| Raw zerolog    | 32 ns    | 0    | 0      |
+| aerr + zerolog | 66 ns    | 0    | 0      |
+| Raw zap        | 150 ns   | 0    | 0      |
+| aerr + zap     | 222 ns   | 64   | 1      |
+| aerr + slog    | 381 ns   | 208  | 2      |
+| logrus         | 493 ns   | 850  | 16     |
 
 **Ten fields:**
-| Logger         | Time      | B/op  | Allocs |
-|----------------|-----------|-------|--------|
-| aerr + zerolog | 121.8 ns  | 0     | 0      |
-| Raw zerolog    | 268.2 ns  | 0     | 0      |
-| aerr + zap     | 892.6 ns  | 80    | 2      |
-| Raw zap        | 1148 ns   | 705   | 1      |
-| aerr + slog    | 2281 ns   | 624   | 3      |
-| logrus         | 5180 ns   | 3985  | 52     |
-
-With ten fields, **aerr + zerolog (122 ns) is faster than raw zerolog (268 ns)** because the fields are already structured — zerolog re-encodes them from scratch on every call.
+| Logger         | Time     | B/op | Allocs |
+|----------------|----------|------|--------|
+| Raw zerolog    | 122 ns   | 0    | 0      |
+| aerr + zerolog | 187 ns   | 0    | 0      |
+| Raw zap        | 395 ns   | 705  | 1      |
+| aerr + zap     | 407 ns   | 64   | 1      |
+| aerr + slog    | 715 ns   | 624  | 2      |
+| logrus         | 2170 ns  | 3961 | 49     |
 
 **Error chain (3 levels with fields):**
-| Logger         | Time      | B/op  | Allocs |
-|----------------|-----------|-------|--------|
-| aerr + zerolog | 167.5 ns  | 0     | 0      |
-| Raw zerolog    | 676.1 ns  | 192   | 5      |
-| aerr + zap     | 1006 ns   | 112   | 3      |
-| Raw zap        | 1519 ns   | 641   | 6      |
-| aerr + slog    | 2943 ns   | 665   | 6      |
-| logrus         | 4802 ns   | 2665  | 45     |
+| Logger         | Time     | B/op | Allocs |
+|----------------|----------|------|--------|
+| Raw zerolog    | 248 ns   | 192  | 5      |
+| aerr + zerolog | 256 ns   | 0    | 0      |
+| Raw zap        | 492 ns   | 642  | 6      |
+| aerr + zap     | 536 ns   | 64   | 1      |
+| aerr + slog    | 899 ns   | 761  | 5      |
+| logrus         | 1672 ns  | 2641 | 42     |
 
-On chains, aerr + zerolog is **~4× faster** than raw zerolog while doing the chain merge (message join, code selection, attribute dedup, stack propagation) for you. The raw-logger chain benchmarks build the chain with `fmt.Errorf` + `%w` and append fields by hand.
-
-### Full aerr numbers
-
-**aerr + slog:**
-```
-BenchmarkDisabled                 25.75 ns/op     48 B/op    1 allocs/op
-BenchmarkSimpleError             720.6  ns/op    208 B/op    2 allocs/op
-BenchmarkSimpleErrorWithStack   1409    ns/op    424 B/op    5 allocs/op
-BenchmarkErrorWith10Fields      2281    ns/op    624 B/op    3 allocs/op
-BenchmarkErrorWith10Fields+Stack 3081   ns/op    841 B/op    6 allocs/op
-BenchmarkErrorChain             2943    ns/op    665 B/op    6 allocs/op
-BenchmarkErrorChainDeep         2143    ns/op    632 B/op    6 allocs/op
-```
-
-**aerr + zerolog (all zero-alloc):**
-```
-BenchmarkAerrZerologSimple             119.3 ns/op    0 B/op    0 allocs/op
-BenchmarkAerrZerologWith10Fields       121.8 ns/op    0 B/op    0 allocs/op
-BenchmarkAerrZerologWith10Fields+Stack 126.9 ns/op    0 B/op    0 allocs/op
-BenchmarkAerrZerologErrorChain         167.5 ns/op    0 B/op    0 allocs/op
-```
+The raw-logger chain baselines rebuild their `fmt.Errorf` + `%w` chain on every iteration (that is where their allocations come from) and append the fields by hand; aerr logs a prebuilt chain, merged once at creation.
 
 ### Creation cost (the up-front price)
 
 ```
-BenchmarkErrorCreation          146.7 ns/op    352 B/op    4 allocs/op
-BenchmarkErrorCreationWithStack 805.5 ns/op    384 B/op    5 allocs/op
+BenchmarkErrorCreation           56 ns/op    224 B/op    3 allocs/op
+BenchmarkErrorCreationWithStack 221 ns/op    256 B/op    4 allocs/op
 ```
 
-Creating an error costs ~147 ns / 4 allocs; adding `StackTrace()` raises that to ~805 ns / 5 allocs (the cost of walking and copying the PCs). A level-filtered (disabled) log is ~26 ns.
+Creating an error with a code and two attributes costs ~56 ns and 3 allocations; adding `StackTrace()` raises that to ~221 ns and 4 (walking and copying the program counters). A level-filtered (disabled) slog call is ~25 ns.
 
 ### When to use what
 
-- **Raw zerolog / raw zap** — absolute lowest latency when you manage fields by hand and log each error exactly once. Best for the hottest, simplest paths.
-- **aerr + zerolog** — structured errors with codes, chain merging, and stack traces, at zero allocations per log and *faster than raw zerolog* once an error carries several fields or a chain. Best default for rich error handling on hot paths.
-- **aerr + slog** — standard-library-only structured error handling (no external logging dependency).
-- **aerr + zap** — structured errors for existing zap codebases.
+- **Raw zerolog / raw zap** — absolute lowest latency when you manage fields by hand and log each error once. Best for the hottest, simplest paths.
+- **aerr + zerolog** — structured errors with codes, chain merging, and stack traces at zero allocations per log, within ~1.5–2× of raw zerolog's time. Best default for rich error handling on hot paths.
+- **aerr + zap** — structured errors for zap codebases: one allocation per log (zap's field slice), and with many fields about raw zap's time at a tenth of its memory.
+- **aerr + slog** — standard-library-only structured errors (no external logging dependency).
 - **logrus** — only if you are already invested in its ecosystem.
 
-Caveats worth stating plainly: error **creation** and the **first** log of a stack-carrying error carry the amortized costs above, and code that builds an error and logs it exactly once sees less of the repeated-logging benefit than these benchmarks show. The zero-allocation figures are for logging an `*aerr.Error` itself: one behind a plain wrapper such as `fmt.Errorf` costs one allocation with zerolog, and an aggregate a few per member.
+Caveats worth stating plainly: error **creation** and the **first** log of a stack-carrying error carry the costs above, and code that builds an error and logs it exactly once sees less of the repeated-logging benefit than these benchmarks show. The zero-allocation figures are for logging an `*aerr.Error` itself: one behind a plain wrapper such as `fmt.Errorf` costs one allocation with zerolog, and an aggregate a few per member.
 
 ### Run benchmarks
 
