@@ -13,8 +13,22 @@ import (
 type Builder struct {
 	code         string
 	msg          string
-	attrs        []attr
 	captureStack bool
+	// The first attributes live in inline, so a builder — which stays on
+	// the stack when used fluently — collects a handful of them without
+	// allocating; finalize copies them into the issued *Error. Past
+	// len(inline) they move to spill, which then holds all of them.
+	inline [4]attr
+	n      int    // attributes in inline, while spill is nil
+	spill  []attr // every attribute, once there are more than len(inline)
+}
+
+// attrs returns the builder's attributes in insertion order.
+func (b *Builder) attrs() []attr {
+	if b.spill != nil {
+		return b.spill
+	}
+	return b.inline[:b.n]
 }
 
 // attr is an ordered key/value pair. Using a slice instead of a map keeps
@@ -97,16 +111,23 @@ func (b *Builder) StackTrace() *Builder {
 // and append paths persist the masked value.
 func (b *Builder) With(key string, value any) *Builder {
 	value = redactValue(key, value)
-	for i := range b.attrs {
-		if b.attrs[i].key == key {
-			b.attrs[i].val = value
+	attrs := b.attrs()
+	for i := range attrs {
+		if attrs[i].key == key {
+			attrs[i].val = value
 			return b
 		}
 	}
-	if b.attrs == nil {
-		b.attrs = make([]attr, 0, 4)
+	switch {
+	case b.spill != nil:
+		b.spill = append(b.spill, attr{key: key, val: value})
+	case b.n < len(b.inline):
+		b.inline[b.n] = attr{key: key, val: value}
+		b.n++
+	default:
+		b.spill = append(make([]attr, 0, 2*len(b.inline)), b.inline[:]...)
+		b.spill = append(b.spill, attr{key: key, val: value})
 	}
-	b.attrs = append(b.attrs, attr{key: key, val: value})
 	return b
 }
 
@@ -148,10 +169,10 @@ func (b *Builder) Wrap(err error) error {
 const finalizeSkip = 4
 
 // finalize builds the immutable *Error from the builder's state. The
-// builder's attribute slice is copied so the issued error owns its memory
-// and later reuse of the builder cannot mutate it. skip is forwarded to
-// captureStack and must count the frames between runtime.Callers and the
-// user call site.
+// builder's attributes are copied into a slice the issued error owns, sized
+// to take the inner error's as well, so later reuse of the builder cannot
+// mutate it. skip is forwarded to captureStack and must count the frames
+// between runtime.Callers and the user call site.
 func (b *Builder) finalize(cause error, skip int) *Error {
 	e := &Error{
 		code:  b.code,
@@ -167,10 +188,8 @@ func (b *Builder) finalize(cause error, skip int) *Error {
 	if inner != nil {
 		extra = len(inner.attrs)
 	}
-	if n := len(b.attrs); n+extra > 0 {
-		attrs := make([]attr, n, n+extra)
-		copy(attrs, b.attrs)
-		e.attrs = attrs
+	if attrs := b.attrs(); len(attrs) > 0 {
+		e.attrs = append(make([]attr, 0, len(attrs)+extra), attrs...)
 	}
 	if inner != nil {
 		if e.code == "" {
@@ -198,15 +217,13 @@ func joinMsg(left, right string) string {
 }
 
 // mergeAttrs returns dst extended with entries from src whose keys are not
-// already present, preserving src order.
+// already present, preserving src order. dst must be a slice the caller
+// owns; finalize sizes it to take src without growing. An empty dst yields
+// src itself, which is safe to share: an issued *Error never writes to its
+// attributes.
 func mergeAttrs(dst, src []attr) []attr {
-	if len(src) == 0 {
-		return dst
-	}
-	if cap(dst)-len(dst) < len(src) {
-		grown := make([]attr, len(dst), len(dst)+len(src))
-		copy(grown, dst)
-		dst = grown
+	if len(dst) == 0 {
+		return src
 	}
 next:
 	for _, a := range src {

@@ -34,6 +34,20 @@ func TestMergeAttrsGrows(t *testing.T) {
 	}
 }
 
+// TestMergeAttrsSharesSrcWhenDstIsEmpty pins the zero-copy case finalize
+// relies on when a wrapper adds no attributes: the inner error's slice is
+// returned as is, and never written to.
+func TestMergeAttrsSharesSrcWhenDstIsEmpty(t *testing.T) {
+	src := []attr{{key: "b", val: 2}}
+	if got := mergeAttrs(nil, src); &got[0] != &src[0] {
+		t.Error("mergeAttrs(nil, src) should return src itself, not a copy")
+	}
+	mergeAttrs([]attr{{key: "a", val: 1}}, src)
+	if src[0] != (attr{key: "b", val: 2}) || len(src) != 1 {
+		t.Errorf("mergeAttrs wrote to src: %v", src)
+	}
+}
+
 // TestIsNilValueNilInterface covers the untyped-nil branch of isNilValue.
 func TestIsNilValueNilInterface(t *testing.T) {
 	if !isNilValue(nil) {
