@@ -34,6 +34,27 @@ func TestMergeAttrsGrows(t *testing.T) {
 	}
 }
 
+// TestMergeAttrsNeverWritesIntoSharedSlices pins the property finalize's
+// hand-off relies on: neither input's backing array is written, not even a
+// dst's spare capacity, and an empty dst yields src itself.
+func TestMergeAttrsNeverWritesIntoSharedSlices(t *testing.T) {
+	backing := make([]attr, 1, 4)
+	backing[0] = attr{key: "a", val: 1}
+	src := []attr{{key: "b", val: 2}}
+
+	got := mergeAttrs(backing, src)
+	if !reflect.DeepEqual(got, []attr{{key: "a", val: 1}, {key: "b", val: 2}}) {
+		t.Errorf("mergeAttrs = %v", got)
+	}
+	if spare := backing[:2][1]; spare != (attr{}) {
+		t.Errorf("mergeAttrs wrote %v into dst's spare capacity", spare)
+	}
+
+	if got := mergeAttrs(nil, src); &got[0] != &src[0] {
+		t.Error("mergeAttrs(nil, src) should return src itself, not a copy")
+	}
+}
+
 // TestIsNilValueNilInterface covers the untyped-nil branch of isNilValue.
 func TestIsNilValueNilInterface(t *testing.T) {
 	if !isNilValue(nil) {

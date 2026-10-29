@@ -3,6 +3,7 @@ package aerr
 import (
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // Builder fluently configures an *Error. Each setter mutates the receiver
@@ -15,6 +16,10 @@ type Builder struct {
 	msg          string
 	attrs        []attr
 	captureStack bool
+	// shared reports that attrs is also held by an issued *Error: finalize
+	// hands the slice over instead of copying it, and the next With copies
+	// it before writing, so an issued error never sees later template edits.
+	shared bool
 }
 
 // attr is an ordered key/value pair. Using a slice instead of a map keeps
@@ -97,6 +102,10 @@ func (b *Builder) StackTrace() *Builder {
 // and append paths persist the masked value.
 func (b *Builder) With(key string, value any) *Builder {
 	value = redactValue(key, value)
+	if b.shared {
+		b.attrs = slices.Clone(b.attrs)
+		b.shared = false
+	}
 	for i := range b.attrs {
 		if b.attrs[i].key == key {
 			b.attrs[i].val = value
@@ -148,29 +157,23 @@ func (b *Builder) Wrap(err error) error {
 const finalizeSkip = 4
 
 // finalize builds the immutable *Error from the builder's state. The
-// builder's attribute slice is copied so the issued error owns its memory
-// and later reuse of the builder cannot mutate it. skip is forwarded to
-// captureStack and must count the frames between runtime.Callers and the
-// user call site.
+// builder's attribute slice is handed to the issued error rather than
+// copied, and the builder is marked shared so its next With copies the
+// slice first: a builder reused as a template never mutates an error it
+// already issued. skip is forwarded to captureStack and must count the
+// frames between runtime.Callers and the user call site.
 func (b *Builder) finalize(cause error, skip int) *Error {
 	e := &Error{
 		code:  b.code,
 		msg:   b.msg,
 		cause: cause,
+		attrs: b.attrs,
 	}
+	b.shared = len(b.attrs) > 0
 	var inner *Error
 	if cause != nil {
 		e.msg = joinMsg(e.msg, cause.Error())
 		inner, _ = AsAerr(cause)
-	}
-	extra := 0
-	if inner != nil {
-		extra = len(inner.attrs)
-	}
-	if n := len(b.attrs); n+extra > 0 {
-		attrs := make([]attr, n, n+extra)
-		copy(attrs, b.attrs)
-		e.attrs = attrs
 	}
 	if inner != nil {
 		if e.code == "" {
@@ -198,24 +201,26 @@ func joinMsg(left, right string) string {
 }
 
 // mergeAttrs returns dst extended with entries from src whose keys are not
-// already present, preserving src order.
+// already present, preserving src order. It never writes into dst's or
+// src's backing arrays, which a Builder or another *Error may share: an
+// empty dst yields src itself, a src adding no new key yields dst itself,
+// and anything else a fresh slice.
 func mergeAttrs(dst, src []attr) []attr {
-	if len(src) == 0 {
-		return dst
+	if len(dst) == 0 {
+		return src
 	}
-	if cap(dst)-len(dst) < len(src) {
-		grown := make([]attr, len(dst), len(dst)+len(src))
-		copy(grown, dst)
-		dst = grown
-	}
+	out := dst
 next:
 	for _, a := range src {
-		for i := range dst {
-			if dst[i].key == a.key {
+		for i := range out {
+			if out[i].key == a.key {
 				continue next
 			}
 		}
-		dst = append(dst, a)
+		if len(out) == len(dst) {
+			out = append(make([]attr, 0, len(dst)+len(src)), dst...)
+		}
+		out = append(out, a)
 	}
-	return dst
+	return out
 }
