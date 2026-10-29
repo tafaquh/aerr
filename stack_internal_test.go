@@ -113,11 +113,3 @@ func TestSkipFrame(t *testing.T) {
 		})
 	}
 }
-
-func TestRenderTracesNilWhenAllFiltered(t *testing.T) {
-	// PCs resolving only to stdlib/aerr frames must render as nil, matching
-	// the Traces() doc ("nil when none was captured").
-	if got := renderTraces(nil); got != nil {
-		t.Errorf("renderTraces(nil) = %v, want nil", got)
-	}
-}

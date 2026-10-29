@@ -48,21 +48,13 @@ var stdlibDir = func() string {
 func captureStack(skip int) []uintptr {
 	var pcs [stackMaxDepth]uintptr
 	n := runtime.Callers(skip, pcs[:])
-	if n == 0 {
-		return nil
-	}
-	out := make([]uintptr, n)
-	copy(out, pcs[:n])
-	return out
+	return append([]uintptr(nil), pcs[:n]...) // nil when n == 0
 }
 
 // renderTraces converts raw PCs into "file:line (func)" strings, dropping
 // stdlib and aerr-internal frames so users only see their own code.
 // Returns nil when nothing remains.
 func renderTraces(pcs []uintptr) []string {
-	if len(pcs) == 0 {
-		return nil
-	}
 	frames := runtime.CallersFrames(pcs)
 	out := make([]string, 0, len(pcs))
 	var buf []byte
