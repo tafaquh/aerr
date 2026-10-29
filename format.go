@@ -12,8 +12,10 @@ import (
 //	%+v      multi-line detail: message, code, attributes, and the stack
 //	         trace when one was captured (pkg/errors convention)
 func (e *Error) Format(s fmt.State, verb rune) {
+	// A fmt.State write has no error-return channel to the fmt caller, so
+	// write results are intentionally discarded throughout this file.
 	if e == nil {
-		io.WriteString(s, "<nil>")
+		_, _ = io.WriteString(s, "<nil>")
 		return
 	}
 	switch verb {
@@ -22,33 +24,33 @@ func (e *Error) Format(s fmt.State, verb rune) {
 			e.formatDetailed(s)
 			return
 		}
-		io.WriteString(s, e.msg)
+		_, _ = io.WriteString(s, e.msg)
 	case 's':
-		io.WriteString(s, e.msg)
+		_, _ = io.WriteString(s, e.msg)
 	case 'q':
-		fmt.Fprintf(s, "%q", e.msg)
+		_, _ = fmt.Fprintf(s, "%q", e.msg)
 	default:
-		fmt.Fprintf(s, "%%!%c(*aerr.Error=%s)", verb, e.msg)
+		_, _ = fmt.Fprintf(s, "%%!%c(*aerr.Error=%s)", verb, e.msg)
 	}
 }
 
 func (e *Error) formatDetailed(w io.Writer) {
-	io.WriteString(w, e.msg)
+	_, _ = io.WriteString(w, e.msg)
 	if e.code != "" {
-		io.WriteString(w, "\ncode: ")
-		io.WriteString(w, e.code)
+		_, _ = io.WriteString(w, "\ncode: ")
+		_, _ = io.WriteString(w, e.code)
 	}
 	if len(e.attrs) > 0 {
-		io.WriteString(w, "\nattributes:")
+		_, _ = io.WriteString(w, "\nattributes:")
 		for _, a := range e.attrs {
-			fmt.Fprintf(w, "\n    %s=%v", a.key, a.val)
+			_, _ = fmt.Fprintf(w, "\n    %s=%v", a.key, a.val)
 		}
 	}
 	if traces := e.Traces(); len(traces) > 0 {
-		io.WriteString(w, "\nstacktrace:")
+		_, _ = io.WriteString(w, "\nstacktrace:")
 		for _, fr := range traces {
-			io.WriteString(w, "\n    ")
-			io.WriteString(w, fr)
+			_, _ = io.WriteString(w, "\n    ")
+			_, _ = io.WriteString(w, fr)
 		}
 	}
 }
