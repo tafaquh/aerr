@@ -160,33 +160,49 @@ func marshalError(enc zapcore.ObjectEncoder, err error, budget *int) error {
 		enc.AddString("message", msg)
 	}
 	if e.NumAttrs() > 0 {
-		encErr := enc.AddObject("attributes", zapcore.ObjectMarshalerFunc(func(dict zapcore.ObjectEncoder) error {
-			var addErr error
-			e.RangeAttrs(func(k string, v any) bool {
-				if addErr = addAttr(dict, k, v); addErr != nil {
-					return false
-				}
-				return true
-			})
-			return addErr
-		}))
-		if encErr != nil {
+		if encErr := enc.AddObject("attributes", attrsObject{e: e}); encErr != nil {
 			return encErr
 		}
 	}
-	if traces := e.Traces(); len(traces) > 0 {
-		encErr := enc.AddArray("stacktrace", zapcore.ArrayMarshalerFunc(func(arr zapcore.ArrayEncoder) error {
-			for i := 0; i < len(traces); i++ {
-				arr.AppendString(traces[i])
-			}
-			return nil
-		}))
-		if encErr != nil {
+	if len(e.Traces()) > 0 {
+		if encErr := enc.AddArray("stacktrace", tracesArray{e: e}); encErr != nil {
 			return encErr
 		}
 	}
 	if len(members) > 0 {
 		return marshalMembers(enc, members, budget)
+	}
+	return nil
+}
+
+// attrsObject renders an error's attributes as a nested object. Like
+// aerrMarshaler it holds only the pointer, so passing it as a
+// zapcore.ObjectMarshaler does not allocate — a closure capturing the error
+// would, on every log call.
+type attrsObject struct {
+	e *aerr.Error
+}
+
+// MarshalLogObject implements zapcore.ObjectMarshaler.
+func (a attrsObject) MarshalLogObject(enc zapcore.ObjectEncoder) error {
+	var addErr error
+	a.e.RangeAttrs(func(k string, v any) bool {
+		addErr = addAttr(enc, k, v)
+		return addErr == nil
+	})
+	return addErr
+}
+
+// tracesArray renders an error's stack trace as an array of strings,
+// pointer-sized for the same reason as attrsObject.
+type tracesArray struct {
+	e *aerr.Error
+}
+
+// MarshalLogArray implements zapcore.ArrayMarshaler.
+func (t tracesArray) MarshalLogArray(arr zapcore.ArrayEncoder) error {
+	for _, frame := range t.e.Traces() {
+		arr.AppendString(frame)
 	}
 	return nil
 }
