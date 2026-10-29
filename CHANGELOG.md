@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Aggregates render structurally. `json.Marshal` and slog render a `Join`
+  result — and an `*Error` that wraps any aggregate, including an
+  `errors.Join` result — with every member under `errors`, each with its own
+  code, attributes, and stack trace and rendered by the same rules as a
+  top-level error (a member wrapped with `fmt.Errorf` keeps its message and
+  still shows the aerr payload it wraps). `json.Marshal` emits an array;
+  slog, which has no array kind for groups, emits a group keyed by position
+  (`"0"`, `"1"`, …), so `ReplaceAttr` and `LogValuer` resolution reach every
+  member value. At most 32 members are expanded per rendered error, counted
+  across nesting; the rest are counted under `errors_omitted`, which keeps a
+  large batch from producing an unbounded record.
+
+### Changed
+
+- slog output of a `Join` result, and of an `*Error` that wraps an
+  aggregate, now includes the members. A `ReplaceAttr` hook that redacts by
+  the exact group path `["error", "attributes"]` does not cover them —
+  member attributes arrive at `["error", "errors", "<i>", "attributes"]` —
+  so match the `attributes` group at any depth instead (the README recipe is
+  updated accordingly). Key-based hooks, `LogValuer` types, `Redact`, and
+  `RedactKeys` need no change.
+
+### Fixed
+
+- `json.Marshal` of a `Join` result produced `{}`, and slog flattened it to
+  its message string, losing every member's code and attributes.
+
 ## [1.2.0] - 2026-08-26
 
 ### Added

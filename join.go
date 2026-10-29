@@ -3,6 +3,7 @@ package aerr
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 )
 
@@ -83,8 +84,9 @@ func spliceOf(err error) ([]error, bool) {
 }
 
 // joinError is the aggregate [Join] returns. It is unexported because its
-// only contract is the standard one: error, Unwrap() []error, and
-// fmt.Formatter.
+// only contract is the standard one — error and Unwrap() []error — plus the
+// renderers every aerr value has: fmt.Formatter, slog.LogValuer, and
+// json.Marshaler.
 //
 // Three invariants hold for every value Join produces and are relied on by
 // the methods below: errs holds at least two errors, none of them nil (which
@@ -158,6 +160,29 @@ func (j *joinError) formatDetailed(w io.Writer) {
 		detail := strings.ReplaceAll(fmt.Sprintf("%+v", err), "\n", "\n      ")
 		_, _ = fmt.Fprintf(w, "\n    - %s", detail)
 	}
+}
+
+// LogValue implements slog.LogValuer, producing a group with the combined
+// message and the members under errors — the shape [Error.LogValue] gives an
+// *Error that wraps an aggregate, without a code, attributes, or stack trace
+// of its own.
+func (j *joinError) LogValue() slog.Value {
+	if j == nil {
+		return slog.Value{}
+	}
+	v, _ := logValue(j, maxMembers)
+	return v
+}
+
+// MarshalJSON implements json.Marshaler, producing the combined message and
+// the members under "errors" (see [Error.MarshalJSON] for the member shape).
+// Like the *Error encoding it never fails and never panics.
+func (j *joinError) MarshalJSON() ([]byte, error) {
+	if j == nil {
+		return []byte("null"), nil
+	}
+	buf, _ := appendErrorJSON(make([]byte, 0, 256), j, maxMembers)
+	return buf, nil
 }
 
 // Errors returns err's members as a slice, reading any aggregate that follows

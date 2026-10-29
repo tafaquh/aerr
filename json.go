@@ -4,12 +4,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 )
 
 // MarshalJSON implements json.Marshaler. The key and nesting shape is the
-// same across the slog and zerolog integrations:
+// same across the slog and zerolog integrations (except that slog keys an
+// aggregate's members by position, having no array kind for groups):
 //
 //	{"code": ..., "message": ..., "attributes": {...}, "stacktrace": [...]}
+//
+// When the error wraps an aggregate (see [Join]), an "errors" array follows
+// with one object of this same shape per member, so every member keeps its
+// own code, attributes, and stack trace. At most 32 members are expanded per
+// rendered error, counted across nesting; the rest are counted under
+// "errors_omitted".
 //
 // Value encodings, however, follow encoding/json and may differ from an
 // adapter's native encoding: here durations serialize as integer
@@ -25,16 +33,29 @@ func (e *Error) MarshalJSON() ([]byte, error) {
 	if e == nil {
 		return []byte("null"), nil
 	}
-	buf := make([]byte, 0, 128)
+	buf, _ := appendErrorJSON(make([]byte, 0, 128), e, maxMembers)
+	return buf, nil
+}
+
+// appendErrorJSON appends err as a JSON object. The message is the one err
+// itself reports; code, attributes, and stacktrace come from the nearest
+// *Error on err's single-cause chain; and when that chain reaches an
+// aggregate, its members are appended the same way under "errors". This is
+// the rendering every member of an aggregate gets, whatever its type. budget
+// is the member allowance left (see maxMembers); what remains of it is
+// returned.
+func appendErrorJSON(buf []byte, err error, budget int) ([]byte, int) {
+	e, members := inspect(err)
 	buf = append(buf, '{')
-	if e.code != "" {
-		buf = appendJSONField(buf, "code", e.code)
+	open := len(buf) // a field written past this offset needs a comma
+	if code := e.Code(); code != "" {
+		buf = appendJSONField(buf, open, "code", code)
 	}
-	if e.msg != "" {
-		buf = appendJSONField(buf, "message", e.msg)
+	if msg := errorText(err); msg != "" {
+		buf = appendJSONField(buf, open, "message", msg)
 	}
-	if len(e.attrs) > 0 {
-		if len(buf) > 1 {
+	if e != nil && len(e.attrs) > 0 {
+		if len(buf) > open {
 			buf = append(buf, ',')
 		}
 		buf = append(buf, `"attributes":{`...)
@@ -50,19 +71,57 @@ func (e *Error) MarshalJSON() ([]byte, error) {
 		buf = append(buf, '}')
 	}
 	if traces := e.Traces(); len(traces) > 0 {
-		if len(buf) > 1 {
+		if len(buf) > open {
 			buf = append(buf, ',')
 		}
 		buf = append(buf, `"stacktrace":`...)
 		val, _ := json.Marshal(traces)
 		buf = append(buf, val...)
 	}
-	buf = append(buf, '}')
-	return buf, nil
+	if len(members) > 0 {
+		shown := min(len(members), budget)
+		budget -= shown
+		if shown > 0 {
+			if len(buf) > open {
+				buf = append(buf, ',')
+			}
+			buf = append(buf, `"errors":[`...)
+			for i, m := range members[:shown] {
+				if i > 0 {
+					buf = append(buf, ',')
+				}
+				buf, budget = appendErrorJSON(buf, m, budget)
+			}
+			buf = append(buf, ']')
+		}
+		if omitted := len(members) - shown; omitted > 0 {
+			if len(buf) > open {
+				buf = append(buf, ',')
+			}
+			buf = append(buf, `"errors_omitted":`...)
+			buf = strconv.AppendInt(buf, int64(omitted), 10)
+		}
+	}
+	return append(buf, '}'), budget
 }
 
-func appendJSONField(buf []byte, key, val string) []byte {
-	if len(buf) > 1 {
+// errorText returns the message a rendered error reports: an *Error's own
+// message, or Error() of anything else, guarded like an attribute value so a
+// nil-ish member reads "<nil>" and a panicking Error() a "<panic: ...>"
+// placeholder instead of crashing the encoder.
+func errorText(err error) string {
+	if e, ok := err.(*Error); ok && e != nil {
+		return e.msg
+	}
+	msg, ok := errString(err)
+	if !ok {
+		return "<nil>"
+	}
+	return msg
+}
+
+func appendJSONField(buf []byte, open int, key, val string) []byte {
+	if len(buf) > open {
 		buf = append(buf, ',')
 	}
 	k, _ := json.Marshal(key)
