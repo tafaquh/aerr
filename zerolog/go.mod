@@ -1,6 +1,6 @@
 module github.com/tafaquh/aerr/zerolog
 
-// aerr v1.1.0 only requires go 1.21, but github.com/rs/zerolog v1.35.1 itself
+// aerr itself only requires go 1.21, but github.com/rs/zerolog v1.35.1
 // declares go 1.23, so 1.23 is the real floor here (go mod tidy enforces this).
 go 1.23
 

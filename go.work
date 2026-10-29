@@ -3,7 +3,7 @@
 // versions. Consumers fetching the modules via `go get` are unaffected
 // (go.work applies only to builds run inside this directory).
 //
-// Release checklist: the zerolog module's go.mod must require a published
+// Release checklist: each adapter module's go.mod must require a published
 // github.com/tafaquh/aerr version that contains every aerr API it uses —
 // CI verifies this with a GOWORK=off consumer smoke test.
 // 1.23, not the root module's 1.21, because github.com/rs/zerolog v1.35.1
