@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/tafaquh/aerr"
 	aerrzap "github.com/tafaquh/aerr/zap"
@@ -191,5 +193,37 @@ func TestFieldTypedNilAttrError(t *testing.T) {
 	}
 	if got := attrs["cause"]; got != "<nil>" {
 		t.Errorf("error.attributes.cause = %v, want %q", got, "<nil>")
+	}
+}
+
+// TestAddAttrTypedValuesMatchZap pins each typed fast path in addAttr to the
+// encoding zap's own typed field gives the same value, so the switch can be
+// changed without silently altering output.
+func TestAddAttrTypedValuesMatchZap(t *testing.T) {
+	ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	cases := []struct {
+		name   string
+		value  any
+		native zap.Field
+	}{
+		{"int64", int64(-7), zap.Int64("v", -7)},
+		{"uint64", uint64(7), zap.Uint64("v", 7)},
+		{"float64", 1.5, zap.Float64("v", 1.5)},
+		{"float32", float32(2.5), zap.Float32("v", 2.5)},
+		{"time", ts, zap.Time("v", ts)},
+		{"duration", time.Second, zap.Duration("v", time.Second)},
+		{"strings", []string{"a", "b"}, zap.Strings("v", []string{"a", "b"})},
+		{"bytes", []byte("raw"), zap.ByteString("v", []byte("raw"))},
+	}
+	for _, c := range cases {
+		logger, buf := newJSONLogger()
+		logger.Error("x", aerrzap.Field(aerr.Code("C").With("v", c.value).Err(nil)))
+		attrs, _ := decodeLine(t, buf)["error"].(map[string]any)["attributes"].(map[string]any)
+
+		nativeLogger, nativeBuf := newJSONLogger()
+		nativeLogger.Error("x", c.native)
+		if got, want := attrs["v"], decodeLine(t, nativeBuf)["v"]; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: attribute renders as %#v, zap renders %#v", c.name, got, want)
+		}
 	}
 }
