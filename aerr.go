@@ -121,15 +121,20 @@ func (e *Error) LogValue() slog.Value {
 // (see maxMembers); what remains of it is returned.
 func logValue(err error, budget int) (slog.Value, int) {
 	e, members := inspect(err)
-	out := make([]slog.Attr, 0, 4)
+	n := e.NumAttrs()
+	// One allocation backs both lists: the first n slots hold the attributes
+	// group, the rest the record's own fields (message, code, attributes,
+	// stacktrace; an aggregate's members append past that).
+	buf := make([]slog.Attr, n, n+4)
+	out := buf[n:]
 	if msg := errorText(err); msg != "" {
 		out = append(out, slog.String("message", msg))
 	}
 	if code := e.Code(); code != "" {
 		out = append(out, slog.String("code", code))
 	}
-	if e != nil && len(e.attrs) > 0 {
-		sub := make([]slog.Attr, len(e.attrs))
+	if n > 0 {
+		sub := buf[:n]
 		for i, a := range e.attrs {
 			sub[i] = slog.Any(a.key, a.val)
 		}

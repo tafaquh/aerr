@@ -403,3 +403,13 @@ func TestMarshalJSONNilReceiverAndNilErrorAttr(t *testing.T) {
 		t.Errorf("typed-nil error attr = %v (present=%v), want JSON null", v, ok)
 	}
 }
+
+// TestLogValueAllocatesOnce guards the slog hot path: one allocation backs
+// both the record's fields and its attributes group.
+func TestLogValueAllocatesOnce(t *testing.T) {
+	err := aerr.Code("DB").Message("query failed").With("table", "users").With("attempt", 3).Err(errors.New("timeout"))
+	e, _ := aerr.AsAerr(err)
+	if n := testing.AllocsPerRun(100, func() { _ = e.LogValue() }); n != 1 {
+		t.Errorf("LogValue allocated %v times per call, want 1", n)
+	}
+}
