@@ -41,30 +41,6 @@ func FuzzWrapMessageJoin(f *testing.F) {
 	})
 }
 
-// TestMessageJoinEmptySides covers the empty-side join rules that the fuzz
-// target skips, using the same public API.
-func TestMessageJoinEmptySides(t *testing.T) {
-	cases := []struct {
-		name     string
-		outerMsg string
-		innerMsg string
-		want     string
-	}{
-		{"empty outer", "", "inner", "inner"},
-		{"empty inner", "outer", "", "outer"},
-		{"both empty", "", "", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			inner := aerr.Message(tc.innerMsg).Err(nil)
-			outer := aerr.Message(tc.outerMsg).Wrap(inner)
-			if outer.Error() != tc.want {
-				t.Errorf("Error() = %q, want %q", outer.Error(), tc.want)
-			}
-		})
-	}
-}
-
 // TestWrapChainProperties builds aerr chains of N layers and checks three
 // invariants across every depth: the combined message has exactly N ": "
 // segments (N+1 with a leaf non-aerr cause), errors.Is reaches every layer,

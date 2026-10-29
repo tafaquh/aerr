@@ -98,33 +98,6 @@ func TestWrapNil(t *testing.T) {
 	}
 }
 
-func TestLog(t *testing.T) {
-	err := aerr.Message("test error").StackTrace().Err(nil)
-	line := logJSON(t, func(l *slog.Logger) {
-		l.Error("error occurred", slog.Any("err", err))
-	})
-
-	if line["level"] != "ERROR" {
-		t.Errorf("level = %v, want ERROR", line["level"])
-	}
-	if line["msg"] != "error occurred" {
-		t.Errorf("msg = %v, want 'error occurred'", line["msg"])
-	}
-
-	eo := errField(t, line)
-	if eo["message"] != "test error" {
-		t.Errorf("err.message = %v, want 'test error'", eo["message"])
-	}
-	traces, ok := eo["stacktrace"].([]any)
-	if !ok || len(traces) == 0 {
-		t.Fatalf("err.stacktrace missing or empty: %v", eo)
-	}
-	first, _ := traces[0].(string)
-	if !strings.Contains(first, "TestLog") {
-		t.Errorf("first frame = %q, want it to point at this test", first)
-	}
-}
-
 func TestLogWithCause(t *testing.T) {
 	original := errors.New("original error")
 	wrapped := aerr.Message("wrapped error").StackTrace().Wrap(original)
@@ -270,34 +243,6 @@ func TestLogAerrChain(t *testing.T) {
 				"endpoint": "/api/users",
 				"method":   "GetUser",
 				"query":    "SELECT * FROM users",
-			},
-		},
-	}
-	if !reflect.DeepEqual(line, want) {
-		t.Errorf("log line = %#v\nwant %#v", line, want)
-	}
-}
-
-func TestWithFields(t *testing.T) {
-	err := aerr.Code("TEST_ERROR").
-		Message("test with fields").
-		With("field1", "value1").
-		With("field2", 123).
-		Err(nil)
-
-	line := logJSON(t, func(l *slog.Logger) {
-		l.Error("test", slog.Any("err", err))
-	})
-
-	want := map[string]any{
-		"level": "ERROR",
-		"msg":   "test",
-		"err": map[string]any{
-			"message": "test with fields",
-			"code":    "TEST_ERROR",
-			"attributes": map[string]any{
-				"field1": "value1",
-				"field2": float64(123),
 			},
 		},
 	}

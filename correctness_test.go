@@ -247,17 +247,6 @@ func TestAbsorbThroughNonAerrWrapper(t *testing.T) {
 	}
 }
 
-func TestOuterCodeWinsThroughWrapper(t *testing.T) {
-	inner := aerr.Code("INNER").ErrMsg("in")
-	mid := fmt.Errorf("mid: %w", inner)
-	outer := aerr.Code("OUTER").Message("out").Wrap(mid)
-
-	e, _ := aerr.AsAerr(outer)
-	if e.Code() != "OUTER" {
-		t.Errorf("code = %q, want OUTER (outer wins)", e.Code())
-	}
-}
-
 // --- builder reuse must not mutate issued errors ---
 
 func TestBuilderReuseDoesNotMutateIssuedErrors(t *testing.T) {

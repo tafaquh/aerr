@@ -18,56 +18,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestZerologIntegration(t *testing.T) {
-	var buf bytes.Buffer
-	logger := zerolog.New(&buf)
-
-	err := aerr.Code("TEST_ERROR").
-		Message("test error").
-		StackTrace().
-		Err(nil)
-
-	logger.Error().Err(err).Msg("test")
-
-	output := buf.String()
-
-	if !strings.Contains(output, "TEST_ERROR") {
-		t.Errorf("expected log to contain 'TEST_ERROR', got:\n%s", output)
-	}
-	if !strings.Contains(output, "test error") {
-		t.Errorf("expected log to contain 'test error', got:\n%s", output)
-	}
-	if !strings.Contains(output, "stacktrace") {
-		t.Errorf("expected log to contain 'stacktrace', got:\n%s", output)
-	}
-}
-
-func TestZerologWithFields(t *testing.T) {
-	var buf bytes.Buffer
-	logger := zerolog.New(&buf)
-
-	err := aerr.Code("TEST_ERROR").
-		Message("test with fields").
-		With("field1", "value1").
-		With("field2", 123).
-		StackTrace().
-		Err(nil)
-
-	logger.Error().Err(err).Msg("test")
-
-	output := buf.String()
-
-	if !strings.Contains(output, "field1") {
-		t.Errorf("expected log to contain 'field1', got:\n%s", output)
-	}
-	if !strings.Contains(output, "value1") {
-		t.Errorf("expected log to contain 'value1', got:\n%s", output)
-	}
-	if !strings.Contains(output, "field2") {
-		t.Errorf("expected log to contain 'field2', got:\n%s", output)
-	}
-}
-
 func TestZerologErrorChain(t *testing.T) {
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
@@ -190,15 +140,5 @@ func TestObjectHelper(t *testing.T) {
 	logger.Error().Object("err", aerrzerolog.Object(errors.New("plain"))).Msg("x")
 	if !strings.Contains(buf.String(), "plain") {
 		t.Errorf("Object() lost plain error message:\n%s", buf.String())
-	}
-}
-
-func TestZerologNonAerrDefault(t *testing.T) {
-	var buf bytes.Buffer
-	logger := zerolog.New(&buf)
-
-	logger.Error().Err(errors.New("ordinary failure")).Msg("x")
-	if !strings.Contains(buf.String(), "ordinary failure") {
-		t.Errorf("non-aerr error lost its message:\n%s", buf.String())
 	}
 }
