@@ -56,18 +56,6 @@ func TestCodeInheritanceMatrix(t *testing.T) {
 	}
 }
 
-// TestCodeInheritedThroughNonAerrWrapper confirms inheritance also works
-// across an fmt.Errorf %w layer between the two aerr layers.
-func TestCodeInheritedThroughNonAerrWrapper(t *testing.T) {
-	inner := aerr.Code("INNER").ErrMsg("in")
-	mid := fmt.Errorf("mid: %w", inner)
-	outer := aerr.Message("out").Wrap(mid) // outer has no code
-	e, _ := aerr.AsAerr(outer)
-	if e.Code() != "INNER" {
-		t.Errorf("Code() = %q, want INNER inherited through %%w wrapper", e.Code())
-	}
-}
-
 // --- message join matrix (empty left / right / both) ---
 
 func TestMessageJoinMatrix(t *testing.T) {

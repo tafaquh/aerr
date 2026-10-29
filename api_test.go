@@ -291,23 +291,9 @@ func TestHasCodeEmptyCode(t *testing.T) {
 
 // --- printf constructors ---
 
+// TestPrintfConstructors covers the Messagef forms; Errorf and Wrapf are
+// pinned by TestPackageConstructors.
 func TestPrintfConstructors(t *testing.T) {
-	if got := aerr.Errorf("failed %d times", 3).Error(); got != "failed 3 times" {
-		t.Errorf("Errorf = %q", got)
-	}
-
-	base := errors.New("io down")
-	w := aerr.Wrapf(base, "attempt %d", 2)
-	if w == nil || w.Error() != "attempt 2: io down" {
-		t.Errorf("Wrapf = %v", w)
-	}
-	if !errors.Is(w, base) {
-		t.Error("Wrapf must keep the chain")
-	}
-	if aerr.Wrapf(nil, "x") != nil {
-		t.Error("Wrapf(nil) must be nil")
-	}
-
 	if got := aerr.Messagef("user %s", "bob").Err(nil).Error(); got != "user bob" {
 		t.Errorf("Messagef = %q", got)
 	}
