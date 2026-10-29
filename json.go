@@ -177,33 +177,26 @@ func attrJSON(v any) []byte {
 			if !ok {
 				return []byte("null")
 			}
-			out, err := json.Marshal(msg)
-			if err == nil {
-				return out
-			}
+			return appendJSONString(nil, msg)
 		}
 	}
 	return marshalValue(v)
 }
 
 // marshalValue encodes v with encoding/json, degrading a value json
-// rejects to its fmt.Sprint form and, failing that, to "<unmarshalable>".
-// A value whose MarshalJSON panics — or whose String/Error panics on the
+// rejects to its fmt.Sprint form. A value whose MarshalJSON panics — or whose String/Error panics on the
 // fmt fallback — is recovered and rendered as "<panic: ...>", so attrJSON
 // upholds its no-panic contract for arbitrary json.Marshaler values
 // (encoding/json does not recover panics from a value's own MarshalJSON).
 func marshalValue(v any) (out []byte) {
 	defer func() {
 		if r := recover(); r != nil {
-			out, _ = json.Marshal(fmt.Sprintf("<panic: %v>", r))
+			out = appendJSONString(nil, fmt.Sprintf("<panic: %v>", r))
 		}
 	}()
 	out, err := json.Marshal(v)
 	if err != nil {
-		out, err = json.Marshal(fmt.Sprint(v))
-		if err != nil {
-			return []byte(`"<unmarshalable>"`)
-		}
+		out = appendJSONString(nil, fmt.Sprint(v))
 	}
 	return out
 }
