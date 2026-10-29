@@ -63,10 +63,9 @@ func appendErrorJSON(buf []byte, err error, budget int) ([]byte, int) {
 			if i > 0 {
 				buf = append(buf, ',')
 			}
-			key, _ := json.Marshal(a.key)
-			buf = append(buf, key...)
+			buf = appendJSONString(buf, a.key)
 			buf = append(buf, ':')
-			buf = append(buf, attrJSON(a.val)...)
+			buf = appendAttrJSON(buf, a.val)
 		}
 		buf = append(buf, '}')
 	}
@@ -74,9 +73,14 @@ func appendErrorJSON(buf []byte, err error, budget int) ([]byte, int) {
 		if len(buf) > open {
 			buf = append(buf, ',')
 		}
-		buf = append(buf, `"stacktrace":`...)
-		val, _ := json.Marshal(traces)
-		buf = append(buf, val...)
+		buf = append(buf, `"stacktrace":[`...)
+		for i, frame := range traces {
+			if i > 0 {
+				buf = append(buf, ',')
+			}
+			buf = appendJSONString(buf, frame)
+		}
+		buf = append(buf, ']')
 	}
 	if len(members) > 0 {
 		shown := min(len(members), budget)
@@ -124,12 +128,41 @@ func appendJSONField(buf []byte, open int, key, val string) []byte {
 	if len(buf) > open {
 		buf = append(buf, ',')
 	}
-	k, _ := json.Marshal(key)
-	buf = append(buf, k...)
+	buf = appendJSONString(buf, key)
 	buf = append(buf, ':')
-	v, _ := json.Marshal(val)
-	buf = append(buf, v...)
-	return buf
+	return appendJSONString(buf, val)
+}
+
+// appendJSONString appends s as a JSON string. A string of printable ASCII
+// with nothing encoding/json would escape — nearly every code, key,
+// message, and stack frame — is copied straight in; anything else goes
+// through json.Marshal. The output is byte-identical to json.Marshal(s)
+// either way, without boxing s or allocating a result for the common case.
+func appendJSONString(buf []byte, s string) []byte {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c > 0x7e || c == '"' || c == '\\' || c == '<' || c == '>' || c == '&' {
+			b, _ := json.Marshal(s)
+			return append(buf, b...)
+		}
+	}
+	buf = append(buf, '"')
+	buf = append(buf, s...)
+	return append(buf, '"')
+}
+
+// appendAttrJSON appends one attribute value. Plain strings, ints, and
+// bools — the bulk of attribute values — are written directly, exactly as
+// encoding/json writes them; everything else goes through attrJSON.
+func appendAttrJSON(buf []byte, v any) []byte {
+	switch x := v.(type) {
+	case string:
+		return appendJSONString(buf, x)
+	case int:
+		return strconv.AppendInt(buf, int64(x), 10)
+	case bool:
+		return strconv.AppendBool(buf, x)
+	}
+	return append(buf, attrJSON(v)...)
 }
 
 // attrJSON marshals one attribute value, never failing and never
