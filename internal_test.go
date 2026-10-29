@@ -1,8 +1,10 @@
 package aerr
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"reflect"
 	"runtime"
 	"testing"
@@ -126,5 +128,31 @@ func TestJoinErrorNilReceiver(t *testing.T) {
 	}
 	if got := fmt.Sprintf("%v", j); got != "<nil>" {
 		t.Errorf("nil *joinError %%v = %q, want <nil>", got)
+	}
+}
+
+// FuzzAppendJSONString pins appendJSONString to encoding/json byte for byte:
+// the plain-ASCII fast path must never change what json.Marshal would emit.
+func FuzzAppendJSONString(f *testing.F) {
+	for _, s := range []string{"", "plain", "a<b", "a>b", "a&b", `quo"te`, `back\slash`, "tab\t", "nul\x00", "del\x7f",
+		"ünïcödé", "line sep", "bad\xffutf8", "/app/main.go:19 (main.main)"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		want, _ := json.Marshal(s)
+		if got := appendJSONString(nil, s); string(got) != string(want) {
+			t.Errorf("appendJSONString(%q) = %s, want %s", s, got, want)
+		}
+	})
+}
+
+// TestAppendAttrJSONMatchesEncodingJSON pins the typed fast paths to
+// encoding/json's output for the same values.
+func TestAppendAttrJSONMatchesEncodingJSON(t *testing.T) {
+	for _, v := range []any{"s", "x<y", 0, -42, math.MaxInt, math.MinInt, true, false} {
+		want, _ := json.Marshal(v)
+		if got := appendAttrJSON(nil, v); string(got) != string(want) {
+			t.Errorf("appendAttrJSON(%#v) = %s, want %s", v, got, want)
+		}
 	}
 }
