@@ -142,6 +142,21 @@ type Frame struct {
 	Function string
 }
 
+// StackTrace returns the program counters of the error's stack trace as
+// runtime.Callers reported them, unfiltered; Traces and Frames give the
+// filtered view. It is the method error trackers look for — Sentry's and
+// New Relic's Go SDKs pick it up by name — so an aerr error reports the
+// stack where it originated rather than where it was handed to the SDK.
+// Every layer of a chain returns the inherited origin stack. It returns nil
+// when no stack was captured, and callers must treat the slice as
+// read-only. (Builder.StackTrace, by contrast, requests a capture.)
+func (e *Error) StackTrace() []uintptr {
+	if e == nil {
+		return nil
+	}
+	return e.pcs
+}
+
 // Frames returns the captured stack as structured frames, applying the
 // same user-code filtering as Traces. It returns nil when no stack was
 // captured. Unlike Traces the result is built on every call, so callers
