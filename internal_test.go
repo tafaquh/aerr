@@ -34,24 +34,17 @@ func TestMergeAttrsGrows(t *testing.T) {
 	}
 }
 
-// TestMergeAttrsNeverWritesIntoSharedSlices pins the property finalize's
-// hand-off relies on: neither input's backing array is written, not even a
-// dst's spare capacity, and an empty dst yields src itself.
-func TestMergeAttrsNeverWritesIntoSharedSlices(t *testing.T) {
-	backing := make([]attr, 1, 4)
-	backing[0] = attr{key: "a", val: 1}
+// TestMergeAttrsSharesSrcWhenDstIsEmpty pins the zero-copy case finalize
+// relies on when a wrapper adds no attributes: the inner error's slice is
+// returned as is, and never written to.
+func TestMergeAttrsSharesSrcWhenDstIsEmpty(t *testing.T) {
 	src := []attr{{key: "b", val: 2}}
-
-	got := mergeAttrs(backing, src)
-	if !reflect.DeepEqual(got, []attr{{key: "a", val: 1}, {key: "b", val: 2}}) {
-		t.Errorf("mergeAttrs = %v", got)
-	}
-	if spare := backing[:2][1]; spare != (attr{}) {
-		t.Errorf("mergeAttrs wrote %v into dst's spare capacity", spare)
-	}
-
 	if got := mergeAttrs(nil, src); &got[0] != &src[0] {
 		t.Error("mergeAttrs(nil, src) should return src itself, not a copy")
+	}
+	mergeAttrs([]attr{{key: "a", val: 1}}, src)
+	if src[0] != (attr{key: "b", val: 2}) || len(src) != 1 {
+		t.Errorf("mergeAttrs wrote to src: %v", src)
 	}
 }
 

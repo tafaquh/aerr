@@ -307,8 +307,8 @@ func TestBuilderReuseAcrossMergesKeepsIssuedErrors(t *testing.T) {
 
 // TestBuilderReuseMatchesCopyModel drives one builder through random
 // sequences of With, Err, and Wrap over inner errors carrying attributes of
-// their own, then checks every issued error against a model that copies
-// eagerly: finalize's hand-off must be indistinguishable from a copy.
+// their own — crossing the builder's inline capacity into its spill slice —
+// then checks every issued error against a model that copies eagerly.
 func TestBuilderReuseMatchesCopyModel(t *testing.T) {
 	type kv struct {
 		k string
@@ -323,7 +323,7 @@ func TestBuilderReuseMatchesCopyModel(t *testing.T) {
 		}
 		return append(m, kv{k, v})
 	}
-	keys := []string{"a", "b", "c", "d"}
+	keys := []string{"a", "b", "c", "d", "e", "f"} // more than the builder holds inline
 	for seed := int64(0); seed < 500; seed++ {
 		r := rand.New(rand.NewSource(seed))
 		b, model := aerr.Code("X"), []kv(nil)
