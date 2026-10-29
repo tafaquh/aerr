@@ -116,17 +116,18 @@ func AerrMarshalFunc(err error) any {
 }
 
 // marshaller returns the structured renderer for err when an *aerr.Error
-// sits anywhere in its chain, and nil otherwise. A bare *aerr.Error gets
-// aerrMarshaller, which holds only the pointer and so converts to an
+// sits anywhere in its chain, and nil otherwise. A bare *aerr.Error — the
+// common case — is recognized first, before the guarded chain search, and
+// gets aerrMarshaller, which holds only the pointer and so converts to an
 // interface without allocating. Anything else — a wrapper such as
 // fmt.Errorf with %w, or an aggregate — is rendered from err itself by
 // chainMarshaller, so the context it adds survives.
 func marshaller(err error) zerolog.LogObjectMarshaler {
-	if !carriesAerr(err) {
-		return nil
-	}
 	if e, ok := err.(*aerr.Error); ok && e != nil {
 		return aerrMarshaller{e: e}
+	}
+	if !carriesAerr(err) {
+		return nil
 	}
 	return chainMarshaller{err: err}
 }
@@ -142,11 +143,8 @@ func carriesAerr(err error) (found bool) {
 			found = true
 		}
 	}()
-	// The e != nil guard tolerates aerr v1.0.0, whose AsAerr returns
-	// (nil, true) for a typed-nil *aerr.Error; falling through renders the
-	// value safely instead of as an empty object.
-	e, ok := aerr.AsAerr(err)
-	return ok && e != nil
+	_, found = aerr.AsAerr(err)
+	return found
 }
 
 // AerrStackMarshaler exposes aerr's captured stack to zerolog's Stack()
@@ -173,9 +171,6 @@ type aerrMarshaller struct {
 
 // MarshalZerologObject implements zerolog.LogObjectMarshaler.
 func (m aerrMarshaller) MarshalZerologObject(evt *zerolog.Event) {
-	if m.e == nil {
-		return
-	}
 	marshalError(evt, m.e, nil)
 }
 
