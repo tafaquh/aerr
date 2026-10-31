@@ -3,6 +3,7 @@ package aerr_test
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -281,6 +282,95 @@ func TestBuilderReuseDoesNotMutateIssuedErrors(t *testing.T) {
 	e2, _ := aerr.AsAerr(second)
 	if got := e2.Attributes()["attempt"]; got != 2 {
 		t.Errorf("second error attempt = %v, want 2", got)
+	}
+}
+
+// TestBuilderReuseAcrossMergesKeepsIssuedErrors re-finalizes one builder
+// against two different inner errors with no With in between. finalize hands
+// the builder's attribute slice to each issued error, so merging must never
+// append into that shared slice's spare capacity, or the second error's
+// inner attribute would overwrite the first's.
+func TestBuilderReuseAcrossMergesKeepsIssuedErrors(t *testing.T) {
+	base := aerr.Message("outer").With("o", 1)
+	first := base.Wrap(aerr.Code("A").With("a", "from-a").ErrMsg("a"))
+	second := base.Wrap(aerr.Code("B").With("b", "from-b").ErrMsg("b"))
+
+	keys1, vals1 := rangeAttrs(t, first)
+	keys2, vals2 := rangeAttrs(t, second)
+	if got := fmt.Sprint(keys1, vals1); got != "[o a] [1 from-a]" {
+		t.Errorf("first error attributes = %s, want [o a] [1 from-a]", got)
+	}
+	if got := fmt.Sprint(keys2, vals2); got != "[o b] [1 from-b]" {
+		t.Errorf("second error attributes = %s, want [o b] [1 from-b]", got)
+	}
+}
+
+// TestBuilderReuseMatchesCopyModel drives one builder through random
+// sequences of With, Err, and Wrap over inner errors carrying attributes of
+// their own — crossing the builder's inline capacity into its spill slice —
+// then checks every issued error against a model that copies eagerly.
+func TestBuilderReuseMatchesCopyModel(t *testing.T) {
+	type kv struct {
+		k string
+		v int
+	}
+	set := func(m []kv, k string, v int) []kv {
+		for i := range m {
+			if m[i].k == k {
+				m[i].v = v
+				return m
+			}
+		}
+		return append(m, kv{k, v})
+	}
+	keys := []string{"a", "b", "c", "d", "e", "f"} // more than the builder holds inline
+	for seed := int64(0); seed < 500; seed++ {
+		r := rand.New(rand.NewSource(seed))
+		b, model := aerr.Code("X"), []kv(nil)
+		var issued []error
+		var want []string
+		for step := 0; step < 30; step++ {
+			switch r.Intn(4) {
+			case 0, 1:
+				k, v := keys[r.Intn(len(keys))], r.Intn(100)
+				b.With(k, v)
+				model = set(model, k, v)
+			case 2:
+				issued = append(issued, b.Err(nil))
+				want = append(want, fmt.Sprint(model))
+			case 3:
+				ib, merged := aerr.Code("IN"), append([]kv(nil), model...)
+				for j := r.Intn(3); j >= 0; j-- {
+					k, v := keys[r.Intn(len(keys))], -r.Intn(100)
+					ib.With(k, v)
+					if !strings.Contains(fmt.Sprint(model), "{"+k+" ") {
+						merged = set(merged, k, v) // outer keys win
+					}
+				}
+				issued = append(issued, b.Wrap(ib.ErrMsg("in")))
+				want = append(want, fmt.Sprint(merged))
+			}
+		}
+		for i, err := range issued {
+			var got []kv
+			e, _ := aerr.AsAerr(err)
+			e.RangeAttrs(func(k string, v any) bool { got = append(got, kv{k, v.(int)}); return true })
+			if fmt.Sprint(got) != want[i] {
+				t.Fatalf("seed %d, issued error %d: attributes %v, want %s", seed, i, got, want[i])
+			}
+		}
+	}
+}
+
+// TestErrorCreationAllocations pins the creation cost: the builder stays on
+// the stack and its attribute slice is handed to the issued error, leaving
+// one allocation each for the attribute slice, the *Error, and the
+// errors.New cause.
+func TestErrorCreationAllocations(t *testing.T) {
+	if n := testing.AllocsPerRun(100, func() {
+		_ = aerr.Code("TEST").With("k1", "v1").With("k2", "v2").ErrMsg("cause")
+	}); n != 3 {
+		t.Errorf("creating an error allocated %v times, want 3", n)
 	}
 }
 
