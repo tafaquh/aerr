@@ -349,3 +349,33 @@ func TestFrames(t *testing.T) {
 		t.Error("Frames() without capture must be nil")
 	}
 }
+
+// TestMarshalJSONAllocatesOnce guards the JSON fast paths: for an error
+// whose strings need no escaping and whose attributes are plain strings,
+// ints, and bools, the result buffer is the only allocation.
+func TestMarshalJSONAllocatesOnce(t *testing.T) {
+	err := aerr.Code("DB").Message("query failed").With("table", "users").With("attempt", 3).With("retry", true).Err(errors.New("timeout"))
+	e, _ := aerr.AsAerr(err)
+	if n := testing.AllocsPerRun(100, func() { _, _ = e.MarshalJSON() }); n != 1 {
+		t.Errorf("MarshalJSON allocated %v times per call, want 1", n)
+	}
+}
+
+// nestedStack captures a stack two user frames deep.
+func nestedStack() error {
+	return func() error { return aerr.StackTrace().ErrMsg("deep") }()
+}
+
+// TestMarshalJSONStacktraceMatchesTraces pins the hand-written stacktrace
+// array to encoding/json's rendering of Traces(), across several frames.
+func TestMarshalJSONStacktraceMatchesTraces(t *testing.T) {
+	e, _ := aerr.AsAerr(nestedStack())
+	if len(e.Traces()) < 2 {
+		t.Fatalf("want at least 2 frames, got %v", e.Traces())
+	}
+	want, _ := json.Marshal(e.Traces())
+	got, _ := e.MarshalJSON()
+	if !strings.Contains(string(got), `"stacktrace":`+string(want)) {
+		t.Errorf("MarshalJSON stacktrace differs from json.Marshal(Traces()):\n got: %s\nwant: %s", got, want)
+	}
+}
