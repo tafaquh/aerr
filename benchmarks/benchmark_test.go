@@ -12,7 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/tafaquh/aerr"
 	aerrzap "github.com/tafaquh/aerr/zap"
-	_ "github.com/tafaquh/aerr/zerolog"
+	aerrzerolog "github.com/tafaquh/aerr/zerolog"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -311,7 +311,26 @@ func BenchmarkZerologErrorChain(b *testing.B) {
 // ==================== Aerr with Zerolog Benchmarks ====================
 
 // BenchmarkAerrZerologSimple tests aerr with zerolog simple error
+// registerZerolog installs the aerr adapter for one benchmark and restores
+// zerolog's previous error marshaler afterwards, so the raw-zerolog
+// baselines keep zerolog's default handling. It fails the benchmark if the
+// adapter does not render an aerr error structurally: without Register, the
+// aerr benchmarks would silently measure a plain error string.
+func registerZerolog(b *testing.B) {
+	prev := zerolog.ErrorMarshalFunc
+	aerrzerolog.Register()
+	b.Cleanup(func() { zerolog.ErrorMarshalFunc = prev })
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+	logger.Error().Err(aerr.Code("CHECK").ErrMsg("check")).Msg("")
+	if !bytes.Contains(buf.Bytes(), []byte(`"code":"CHECK"`)) {
+		b.Fatalf("aerr zerolog adapter is not rendering: %s", buf.Bytes())
+	}
+}
+
 func BenchmarkAerrZerologSimple(b *testing.B) {
+	registerZerolog(b)
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
@@ -327,6 +346,7 @@ func BenchmarkAerrZerologSimple(b *testing.B) {
 
 // BenchmarkAerrZerologWith10Fields tests aerr with zerolog and 10 fields
 func BenchmarkAerrZerologWith10Fields(b *testing.B) {
+	registerZerolog(b)
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
@@ -353,6 +373,7 @@ func BenchmarkAerrZerologWith10Fields(b *testing.B) {
 
 // BenchmarkAerrZerologWith10FieldsAndStack tests aerr with zerolog, 10 fields and stack
 func BenchmarkAerrZerologWith10FieldsAndStack(b *testing.B) {
+	registerZerolog(b)
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
@@ -380,6 +401,7 @@ func BenchmarkAerrZerologWith10FieldsAndStack(b *testing.B) {
 
 // BenchmarkAerrZerologErrorChain tests aerr with zerolog error chain (3 levels)
 func BenchmarkAerrZerologErrorChain(b *testing.B) {
+	registerZerolog(b)
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
