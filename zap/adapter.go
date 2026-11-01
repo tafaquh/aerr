@@ -40,9 +40,6 @@ import (
 // cannot escape the log call.) A nil err produces a no-op field, matching
 // zap.Error's behavior.
 func Field(err error) zap.Field {
-	if err == nil {
-		return zap.Skip()
-	}
 	if m := marshaler(err); m != nil {
 		return zap.Object("error", m)
 	}
@@ -65,17 +62,18 @@ func Object(err error) zapcore.ObjectMarshaler {
 }
 
 // marshaler returns the structured renderer for err when an *aerr.Error
-// sits anywhere in its chain, and nil otherwise. A bare *aerr.Error gets
-// aerrMarshaler, which holds only the pointer and so converts to an
+// sits anywhere in its chain, and nil otherwise. A bare *aerr.Error — the
+// common case — is recognized first, before the guarded chain search, and
+// gets aerrMarshaler, which holds only the pointer and so converts to an
 // interface without allocating. Anything else — a wrapper such as
 // fmt.Errorf with %w, or an aggregate — is rendered from err itself by
 // chainMarshaler, so the context it adds survives.
 func marshaler(err error) zapcore.ObjectMarshaler {
-	if !carriesAerr(err) {
-		return nil
-	}
 	if e, ok := err.(*aerr.Error); ok && e != nil {
 		return aerrMarshaler{e: e}
+	}
+	if !carriesAerr(err) {
+		return nil
 	}
 	return chainMarshaler{err: err}
 }
@@ -91,11 +89,8 @@ func carriesAerr(err error) (found bool) {
 			found = true
 		}
 	}()
-	// The e != nil guard tolerates aerr v1.0.0, whose AsAerr returns
-	// (nil, true) for a typed-nil *aerr.Error; falling through renders the
-	// value safely instead of as an empty object.
-	e, ok := aerr.AsAerr(err)
-	return ok && e != nil
+	_, found = aerr.AsAerr(err)
+	return found
 }
 
 // aerrMarshaler renders an *aerr.Error directly into a zapcore encoder,
@@ -106,9 +101,6 @@ type aerrMarshaler struct {
 
 // MarshalLogObject implements zapcore.ObjectMarshaler.
 func (m aerrMarshaler) MarshalLogObject(enc zapcore.ObjectEncoder) error {
-	if m.e == nil {
-		return nil
-	}
 	return marshalError(enc, m.e, nil)
 }
 
