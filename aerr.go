@@ -50,6 +50,14 @@ func (e *Error) Code() string {
 	return e.code
 }
 
+// ErrorType returns the error's code: the low-cardinality class of error
+// OpenTelemetry records as the error.type attribute. semconv.ErrorType(err)
+// reads this method — through wrappers via errors.As from semconv v1.40
+// on — and falls back to the Go type name when it returns "".
+func (e *Error) ErrorType() string {
+	return e.Code()
+}
+
 // NumAttrs returns the number of attached attributes.
 func (e *Error) NumAttrs() int {
 	if e == nil {

@@ -103,6 +103,15 @@
 // reusable as a template after finalizing (its state is copied into each
 // issued error) but is not safe for concurrent use.
 //
+// # Error trackers and tracing
+//
+// [Error.StackTrace] returns the captured program counters under the name
+// error trackers look for, so Sentry's and New Relic's Go SDKs report an
+// aerr error's origin stack with no glue code; [Error.Frames] gives the same
+// stack as filtered, structured frames. [Error.ErrorType] returns the code,
+// which OpenTelemetry's semconv.ErrorType records as the error.type
+// attribute.
+//
 // # Logging adapters
 //
 // The core module depends only on the standard library. Optional logging
